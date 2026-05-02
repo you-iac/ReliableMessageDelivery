@@ -1,8 +1,13 @@
 
 add_executable(server service.cpp)
 
-#链接必要的库，尤其是example中生成的静态库
-target_link_libraries(server ${LIBS})
+#链接必要的库，
+target_link_libraries(server
+    message_protocol
+    pthread
+    muduo_net
+    muduo_base
+)
 
 
 # 设置 server 可执行文件输出目录

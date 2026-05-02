@@ -24,3 +24,5 @@ TestResults.xml
 
 bin
 build
+.idea
+bench

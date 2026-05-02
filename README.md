@@ -108,3 +108,96 @@
     定时器扫描未 ACK 消息
     客户端模拟两个用户
 
+
+# 举几个你项目里一定会遇到的场景
+## 场景一：client send() 成功，不代表服务端业务处理成功
+
+客户端调用：
+
+send(fd, data, len, 0);
+
+返回成功，只能说明数据进入了本机内核发送缓冲区，或者部分数据被发送出去。
+
+它不代表：
+
+服务端应用层已经解析成功
+服务端已经写入消息存储
+服务端已经返回业务 ACK
+消费者已经收到消息
+
+所以 Producer 仍然需要等服务端返回：
+
+PRODUCE_ACK
+## 场景二：服务端收到数据后宕机
+
+流程可能是：
+
+Producer -> Server: 发送消息
+Server TCP 层收到数据
+Server 应用层刚解析完
+Server 还没写入磁盘
+Server 崩溃
+
+从 TCP 角度看，数据可能已经到达服务端了。
+
+但从业务角度看，这条消息可能已经丢了。
+
+所以可靠消息系统需要：
+
+收到消息后先持久化
+持久化成功后再返回 PRODUCE_ACK
+
+这才是业务可靠。
+
+## 场景三：服务端保存成功，但 ACK 回包丢了
+
+流程：
+
+Producer -> Server: PRODUCE_REQ
+Server: 保存消息成功
+Server -> Producer: PRODUCE_ACK
+网络断了，Producer 没收到 ACK
+Producer 超时重发
+
+这时如果服务端不做去重，就会存两条一样的消息。
+
+所以你需要：
+
+client_msg_id
+msg_id
+去重表
+幂等处理
+
+比如：
+
+client_id + client_msg_id -> server_msg_id
+
+第一次收到：
+
+client1-000001 -> msg_id 10001
+
+第二次重发：
+
+发现 client1-000001 已经存在
+不重复保存
+直接返回 msg_id 10001
+
+这就是应用层可靠投递。
+
+## 场景四：Server 投递给 Consumer 后，Consumer 处理失败
+
+流程：
+
+Server -> Consumer: 投递 msg_id=10001
+Consumer 收到了
+Consumer 还没处理完就崩溃
+
+TCP 可能已经成功把字节发过去了。
+
+但业务上这条消息并没有被成功消费。
+
+所以 Consumer 必须在处理完成后返回：
+
+CONSUME_ACK
+
+Server 收到这个 ACK 后，才能把消息标记为已消费。
