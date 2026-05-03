@@ -1,6 +1,10 @@
 
-add_executable(server service.cpp)
+add_executable(server main_service.cpp
+    src/ChatServer.cpp)
 
+target_include_directories(server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    
 #链接必要的库，
 target_link_libraries(server
     message_protocol

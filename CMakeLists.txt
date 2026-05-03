@@ -19,6 +19,7 @@ add_library(message_protocol STATIC
     ${PROTO_HDRS}
     protocol/Codec.h
     protocol/EnvelopeFactory.h
+    protocol/EnvelopeInspector.h
 )
 
 target_include_directories(message_protocol PUBLIC
