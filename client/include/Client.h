@@ -31,8 +31,11 @@ private:
 
     std::atomic<bool> stop{false};
     std::atomic<int> received_count{0}; 
+    bool verbose = false;
 
 public:
+    void setVerbose(bool enabled);
+
     bool startClient(uint64_t uid, int expected_messages);
     void stopClient();
 

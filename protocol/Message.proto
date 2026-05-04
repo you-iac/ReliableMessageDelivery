@@ -22,27 +22,21 @@ enum MessageType {
 // 接收方先按长度头拆出完整 Envelope，再反序列化，最后根据 type/payload
 // 决定交给哪个业务处理函数。
 message Envelope {
-  // 业务包类型，例如登录、聊天、确认、心跳。
-  MessageType type = 1;
+  
+  MessageType type = 1;   // 业务包类型，例如登录、聊天、确认、心跳。
 
-  // 客户端在单个连接内维护的请求序号。
-  // 服务端返回 Ack 时可以带回同一个 seq，客户端就知道这是对哪次请求的响应。
-  // 注意：seq 不是持久化消息 ID。
-  uint64 seq = 2;
+  uint64      seq = 2;   // 客户端在单个连接内维护的请求序号。Ack回同一个 seq
 
-  // 发送方生成的毫秒级时间戳。
-  // 后续可用于链路追踪和粗略的延迟统计。
-  uint64 timestamp_ms = 3;
+  uint64      timestamp_ms = 3;  // 发送方生成的毫秒级时间戳。可用于链路追踪和粗略的延迟统计。
 
-  // 每个 Envelope 只应该携带一种具体 payload。
-  // 例如 LOGIN_REQ 使用 login_req，CHAT_REQ 使用 chat_req。
-  oneof payload {
-    LoginRequest login_req = 10;
+  
+  oneof   payload {       //具体的内容体// 每个 Envelope 只应该携带一种具体 payload。
+    LoginRequest  login_req = 10;
     LoginResponse login_resp = 11;
-    ChatRequest chat_req = 12;
-    ChatPush chat_push = 13;
-    Ack ack = 14;
-    Heartbeat heartbeat = 15;
+    ChatRequest   chat_req = 12;
+    ChatPush      chat_push = 13;
+    Ack           ack = 14;
+    Heartbeat     heartbeat = 15;
   }
 }
 

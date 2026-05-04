@@ -1,6 +1,9 @@
 
 add_executable(server main_service.cpp
-    src/ChatServer.cpp)
+    src/ChatServer.cpp
+    src/MessageStore.cpp
+    src/UserStateService.cpp
+    src/ServerEventDispatcher.cpp)
 
 target_include_directories(server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)

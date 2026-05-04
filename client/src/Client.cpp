@@ -7,6 +7,10 @@
 #include "EnvelopeFactory.h"
 #include "EnvelopeInspector.h"
 
+void Client::setVerbose(bool enabled) {
+    verbose = enabled;
+}
+
 bool Client::startClient(uint64_t user_uid, int expected_messages) {
     uid = user_uid;
     stop.store(false);
@@ -114,7 +118,9 @@ bool Client::sendEnvelope(const message::Envelope& envelope) {
         return false;
     }
 
-    std::cout << "send: " << EnvelopeInspector::ToString(envelope) << "\n";
+    if (verbose) {
+        std::cout << "send: " << EnvelopeInspector::ToString(envelope) << "\n";
+    }
     return sendAll(frame);
 }
 //接收线程函数
@@ -151,8 +157,10 @@ void Client::receiverLoop(int expected_messages) {
         for (const auto& envelope : decode_result.envelopes) {
             pushMessage(envelope);
             ++received_count;
-            std::cout << "uid " << uid << " received: "
-                      << EnvelopeInspector::ToString(envelope) << "\n";
+            if (verbose) {
+                std::cout << "uid " << uid << " received: "
+                          << EnvelopeInspector::ToString(envelope) << "\n";
+            }
         }
 
         if (expected_messages > 0 &&
