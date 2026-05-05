@@ -38,24 +38,10 @@ struct MessageCounts {
     int chat_pushes = 0;
 };
 
-MessageCounts CountMessages(const std::vector<message::Envelope>& messages) {
-    MessageCounts counts;
-    for (const auto& envelope : messages) {
-        if (envelope.type() == message::LOGIN_RESP) {
-            ++counts.login_resps;
-        } else if (envelope.type() == message::ACK) {
-            ++counts.acks;
-        } else if (envelope.type() == message::CHAT_PUSH) {
-            ++counts.chat_pushes;
-        }
-    }
-    return counts;
-}
-
 int TotalSenderAcks(const std::vector<std::unique_ptr<Client>>& senders) {
     int total = 0;
     for (const auto& sender : senders) {
-        total += CountMessages(sender->getMessage()).acks;
+        total += sender->getAckCount();
     }
     return total;
 }
@@ -64,7 +50,7 @@ int TotalSenderLoginResponses(
     const std::vector<std::unique_ptr<Client>>& senders) {
     int total = 0;
     for (const auto& sender : senders) {
-        total += CountMessages(sender->getMessage()).login_resps;
+        total += sender->getLoginResponseCount();
     }
     return total;
 }
@@ -89,7 +75,7 @@ int main(int argc, char* argv[]) {
     Client receiver;
     receiver.setVerbose(verbose);
     const uint64_t receiver_uid = 1;
-    if (!receiver.startClient(receiver_uid, total_messages + 1)) {
+    if (!receiver.startClient(receiver_uid)) {
         receiver.stopClient();
         return 1;
     }
@@ -100,7 +86,7 @@ int main(int argc, char* argv[]) {
         std::unique_ptr<Client> sender(new Client());
         sender->setVerbose(verbose);
         uint64_t sender_uid = static_cast<uint64_t>(1000 + i);
-        if (!sender->startClient(sender_uid, messages_per_sender + 1)) {
+        if (!sender->startClient(sender_uid)) {
             std::cerr << "failed to start sender uid=" << sender_uid << "\n";
             sender->stopClient();
             receiver.stopClient();
@@ -154,7 +140,7 @@ int main(int argc, char* argv[]) {
 
     while (true) {
         sender_acks = TotalSenderAcks(senders);
-        receiver_pushes = CountMessages(receiver.getMessage()).chat_pushes;
+        receiver_pushes = receiver.getChatPushCount();
 
         auto now = std::chrono::steady_clock::now();
         if (!ack_done && sender_acks >= total_messages) {
@@ -181,7 +167,10 @@ int main(int argc, char* argv[]) {
     }
 
     auto finished_at = std::chrono::steady_clock::now();
-    MessageCounts receiver_counts = CountMessages(receiver.getMessage());
+    MessageCounts receiver_counts;
+    receiver_counts.login_resps = receiver.getLoginResponseCount();
+    receiver_counts.acks = receiver.getAckCount();
+    receiver_counts.chat_pushes = receiver.getChatPushCount();
     int sender_login_resps = TotalSenderLoginResponses(senders);
 
     double ack_elapsed_seconds =
