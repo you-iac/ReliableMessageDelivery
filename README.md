@@ -1,203 +1,487 @@
 # ReliableMessageDelivery
-> 用户在线时消息实时投递，用户离线时消息可靠保存，用户重连后补发；同时保证消息不重复、不乱序、可追踪、可重试。
 
-这比“聊天服务器”更聚焦，也更像你真的在解决问题。
-
-## 它和普通聊天服务器的区别
-
-普通教程项目重点是：
-
-> 注册、登录、单聊、群聊、好友、群组、Redis 发布订阅。
-
-你这个项目重点应该是：
-
-> 消息可靠性、ACK 确认、失败重试、离线补偿、消息去重、投递延迟统计、异常排查。
-
-这样面试官看到的不是“又一个聊天项目”，而是：
-
-> 这个人知道 IM 后台真正麻烦的地方在哪里。
-
----
-
-## 项目可以这样设计
-
-### 核心流程
+ReliableMessageDelivery 是一个 C++11 实现的可靠消息投递服务原型，重点不是完整聊天业务，而是即时通信场景中的消息可靠性：
 
 ```text
-用户 A 发送消息
-        ↓
-服务端生成 msg_id
-        ↓
-判断用户 B 是否在线
-        ↓
-在线：实时推送
-离线：写入离线消息表
-        ↓
-客户端收到后返回 ACK
-        ↓
-服务端更新消息状态
-        ↓
-未 ACK 消息进入重试队列
+在线实时投递
+离线消息暂存
+用户上线补发
+发送方 ACK
+接收方 ACK
+超时重试
+幂等去重
+消息状态追踪
 ```
 
-### 重点功能
+当前版本使用内存存储实现可靠投递闭环，适合学习 C++ 网络编程、Muduo Reactor、Protobuf 协议设计和消息可靠投递机制。
 
-* 消息 ID 生成，保证每条消息可追踪。
-* 在线用户实时投递，离线用户写入 MySQL。
-* 用户重连后拉取未读消息。
-* 客户端 ACK 确认，服务端更新消息状态。
-* 未 ACK 消息定时重试。
-* 重复消息基于 `msg_id` 去重。
-* 记录消息发送时间、投递时间、ACK 时间，统计平均投递延迟。
-* 提供 `/metrics` 接口查看投递成功率、重试次数、离线消息积压量。
+## 快速开始
 
-这个项目的味道就变了。
+构建项目：
 
----
+```bash
+cmake -S . -B build
+cmake --build build
+```
 
-## 简历可以这样写
+启动服务端：
 
-**IM 消息可靠投递服务｜C++ / Muduo / Redis / MySQL / Protobuf**
+```bash
+./bin/server
+```
 
-项目背景：
-面向即时通信场景下在线消息转发、离线消息补偿和异常投递追踪问题，基于 C++ 实现轻量级消息可靠投递服务，支持实时投递、离线存储、ACK 确认、失败重试和消息状态追踪。
+服务端默认监听：
 
-项目内容：
+```text
+0.0.0.0:8080
+```
 
-* 基于 Muduo Reactor 模型实现 TCP 长连接服务，负责客户端连接管理、消息收发、异常断开处理和用户在线状态维护。
-* 使用 Protobuf 设计登录、消息投递、ACK 确认、离线消息拉取等通信协议，统一不同消息类型的序列化与解析流程。
-* 设计消息状态机，支持 `Pending`、`Delivered`、`Acked`、`Failed` 等状态流转，便于追踪消息投递过程。
-* 在线用户消息直接转发，离线用户消息持久化到 MySQL，用户重新上线后按时间顺序拉取未读消息。
-* 引入 ACK 确认与失败重试机制，对超时未确认消息进行延迟重投，提升异常连接场景下的消息投递可靠性。
-* 基于 `msg_id` 实现消息去重，避免网络重连或重试导致客户端重复展示消息。
-* 使用 Redis 维护在线用户状态和未 ACK 消息缓存，降低频繁访问 MySQL 的开销。
-* 通过压测脚本模拟多客户端并发发送消息，统计消息投递成功率、平均转发延迟、ACK 超时率和离线消息补发耗时。
+运行一次压测：
 
-## 最小功能闭环
-| 功能      | 是否需要  |
-| ------- | ----- |
-| 注册登录    | 不需要   |
-| 好友系统    | 不需要   |
-| 群聊      | 暂时不需要 |
-| TCP 长连接 | 需要    |
-| 用户连接绑定  | 需要    |
-| 消息发送    | 需要    |
-| 服务端 ACK | 需要    |
-| 接收端 ACK | 需要    |
-| 离线消息    | 需要    |
-| 消息重试    | 需要    |
-| 消息去重    | 需要    |
-| 心跳保活    | 需要    |
-| 消息状态机   | 需要    |
+```bash
+./bin/client 16 1000 quiet 60
+```
 
-# 实现草图
-## 阶段一：连接绑定
+当前压测模型是多个发送方客户端向一个接收方客户端发送消息，适合快速验证登录、投递、ACK、重试和消息状态流转是否闭环。
 
-## 阶段二：发送消息
+## 当前能力
 
-## 阶段三：服务端 ACK
+已实现：
 
-## 阶段四：接收方 ACK
+- 基于 Muduo 的 TCP 长连接服务。
+- Protobuf `Envelope` 协议封装。
+- `4 字节网络序长度头 + Protobuf body` 的 TCP 帧格式。
+- 客户端登录绑定 uid。
+- 服务端维护在线用户状态：
+  - `uid -> TcpConnectionPtr`
+  - `conn -> uid`
+- 在线消息实时投递。
+- 离线消息保存为 `Pending`。
+- 用户重新登录后补发 `Pending` 消息。
+- 发送方 ACK：服务端收到并处理 `CHAT_REQ` 后返回 ACK。
+- 接收方 ACK：客户端收到 `CHAT_PUSH` 后返回 ACK。
+- 服务端收到接收方 ACK 后将消息标记为 `Acked`。
+- 消息状态机：
+  - `Pending`
+  - `Delivered`
+  - `Acked`
+  - `Failed`
+- 客户端发送侧 `pending_acks` 和超时重试。
+- 服务端 `Delivered` 超时扫描和重投。
+- 基于 `from_uid + client_msg_id` 的服务端幂等去重。
+- 多客户端压测入口。
+- 开发记录文档。
 
-# 第一版功能实现
-    单 ChatServer
-    TCP 长连接
-    Protobuf 协议
-    MySQL 存消息
-    内存维护在线用户
-    定时器扫描未 ACK 消息
-    客户端模拟两个用户
+当前未实现或未完善：
 
+- 客户端按 `msg_id` 去重。
+- `Acked / Failed` 消息清理。
+- 严格按创建时间顺序补发离线消息。
+- 心跳超时扫描和踢下线。
+- MySQL 持久化。
+- Redis 在线状态或未 ACK 缓存。
+- `/metrics` 指标接口。
+- 多 worker shard 并行业务处理。
+- 生产级压测和限流策略。
 
-# 举几个你项目里一定会遇到的场景
-## 场景一：client send() 成功，不代表服务端业务处理成功
+## 架构概览
 
-客户端调用：
+```text
+client
+  Client
+    connectServer()
+    sendMessage()
+    receiverLoop()
+    retryLoop()
+    pending_acks
 
-send(fd, data, len, 0);
+server
+  ChatServer
+    TCP 连接管理
+    半包缓存
+    Envelope 解码
+    事件入队
 
-返回成功，只能说明数据进入了本机内核发送缓冲区，或者部分数据被发送出去。
+  ServerEventDispatcher
+    业务事件队列
+    登录处理
+    聊天处理
+    ACK 处理
+    离线补发
+    超时重投
 
-它不代表：
+  UserStateService
+    在线用户状态
+    conn -> uid
+    uid -> conn
 
-服务端应用层已经解析成功
-服务端已经写入消息存储
-服务端已经返回业务 ACK
-消费者已经收到消息
+  MessageStore
+    内存消息账本
+    状态流转
+    幂等去重索引
+```
 
-所以 Producer 仍然需要等服务端返回：
+## 协议模型
 
-PRODUCE_ACK
-## 场景二：服务端收到数据后宕机
+协议定义位于：
 
-流程可能是：
+```text
+protocol/Message.proto
+```
 
-Producer -> Server: 发送消息
-Server TCP 层收到数据
-Server 应用层刚解析完
-Server 还没写入磁盘
-Server 崩溃
+核心消息类型：
 
-从 TCP 角度看，数据可能已经到达服务端了。
+```text
+LOGIN_REQ
+LOGIN_RESP
+CHAT_REQ
+CHAT_PUSH
+ACK
+HEARTBEAT
+```
 
-但从业务角度看，这条消息可能已经丢了。
+所有业务消息都包在 `Envelope` 中：
 
-所以可靠消息系统需要：
+```protobuf
+message Envelope {
+  MessageType type = 1;
+  uint64 seq = 2;
+  uint64 timestamp_ms = 3;
 
-收到消息后先持久化
-持久化成功后再返回 PRODUCE_ACK
+  oneof payload {
+    LoginRequest  login_req = 10;
+    LoginResponse login_resp = 11;
+    ChatRequest   chat_req = 12;
+    ChatPush      chat_push = 13;
+    Ack           ack = 14;
+    Heartbeat     heartbeat = 15;
+  }
+}
+```
 
-这才是业务可靠。
+网络传输格式：
 
-## 场景三：服务端保存成功，但 ACK 回包丢了
+```text
+4 字节大端 body 长度 + 序列化后的 message::Envelope
+```
 
-流程：
+## 可靠投递流程
 
-Producer -> Server: PRODUCE_REQ
-Server: 保存消息成功
-Server -> Producer: PRODUCE_ACK
-网络断了，Producer 没收到 ACK
-Producer 超时重发
+### 在线投递
 
-这时如果服务端不做去重，就会存两条一样的消息。
+```text
+发送方 Client
+  -> CHAT_REQ(from_uid, to_uid, content, client_msg_id)
 
-所以你需要：
+服务端
+  -> 校验连接已登录
+  -> 校验 from_uid 和连接 uid 一致
+  -> MessageStore::createMessage()
+  -> 根据 from_uid + client_msg_id 幂等去重
+  -> 目标在线则发送 CHAT_PUSH
+  -> markDelivered(msg_id)
+  -> 给发送方返回 ACK(msg_id)
 
-client_msg_id
-msg_id
-去重表
-幂等处理
+接收方 Client
+  -> 收到 CHAT_PUSH
+  -> 存入业务消息队列
+  -> 返回 ACK(msg_id)
 
-比如：
+服务端
+  -> 校验 ACK 来自消息接收方
+  -> markAcked(msg_id)
+```
 
-client_id + client_msg_id -> server_msg_id
+### 离线补发
 
-第一次收到：
+```text
+发送方发消息
+  -> 目标用户不在线
+  -> MessageStore 保存为 Pending
+  -> 服务端仍给发送方 ACK，表示消息已被服务端可靠接收
 
-client1-000001 -> msg_id 10001
+目标用户重新登录
+  -> handleLogin()
+  -> deliverPendingMessages(uid)
+  -> tryDeliverMessage(msg_id)
+  -> CHAT_PUSH
+  -> Delivered
+  -> 接收方 ACK
+  -> Acked
+```
 
-第二次重发：
+### 超时重投
 
-发现 client1-000001 已经存在
-不重复保存
-直接返回 msg_id 10001
+服务端后台 `deliveryLoop()` 会定期扫描：
 
-这就是应用层可靠投递。
+```text
+Delivered 且超过 ACK 等待时间的消息
+```
 
-## 场景四：Server 投递给 Consumer 后，Consumer 处理失败
+如果未超过最大重试次数：
 
-流程：
+```text
+tryDeliverMessage(msg_id, true)
+```
 
-Server -> Consumer: 投递 msg_id=10001
-Consumer 收到了
-Consumer 还没处理完就崩溃
+如果超过最大重试次数：
 
-TCP 可能已经成功把字节发过去了。
+```text
+markFailed(msg_id)
+```
 
-但业务上这条消息并没有被成功消费。
+客户端也维护 `pending_acks`，对发送方 ACK 超时的 `CHAT_REQ` 进行重发。
 
-所以 Consumer 必须在处理完成后返回：
+## 幂等去重
 
-CONSUME_ACK
+客户端每条业务消息会生成 `client_msg_id`：
 
-Server 收到这个 ACK 后，才能把消息标记为已消费。
+```text
+uid + timestamp_ms + local_counter
+```
+
+服务端维护内存索引：
+
+```text
+from_uid + client_msg_id -> msg_id
+```
+
+如果客户端因为 ACK 超时重发同一个 `CHAT_REQ`，服务端会命中已有记录：
+
+```text
+不重复创建 MessageRecord
+不重复投递 CHAT_PUSH
+直接返回原 msg_id 的 ACK
+```
+
+注意：当前服务端已实现发送侧幂等去重，但客户端还未实现 `msg_id` 去重。服务端重投和接收方 ACK 并发时，客户端仍可能收到重复 `CHAT_PUSH`，后续需要在客户端按 `msg_id` 去重。
+
+## 目录结构
+
+```text
+.
+├── CMakeLists.txt
+├── protocol
+│   ├── Message.proto
+│   ├── Codec.h
+│   ├── EnvelopeFactory.h
+│   └── EnvelopeInspector.h
+├── client
+│   ├── CMakeLists.txt
+│   ├── include/Client.h
+│   ├── src/Client.cpp
+│   └── main_client.cpp
+├── server
+│   ├── CMakeLists.txt
+│   ├── include
+│   │   ├── ChatServer.h
+│   │   ├── MessageStore.h
+│   │   ├── ServerEventDispatcher.h
+│   │   └── UserStateService.h
+│   ├── src
+│   │   ├── ChatServer.cpp
+│   │   ├── MessageStore.cpp
+│   │   ├── ServerEventDispatcher.cpp
+│   │   └── UserStateService.cpp
+│   └── main_service.cpp
+├── records
+└── record.md
+```
+
+## 环境依赖
+
+当前项目依赖：
+
+- C++11 编译器
+- CMake
+- Protobuf
+- Muduo
+- pthread
+
+在 Ubuntu 环境中需要确保已安装 Protobuf 和 Muduo 开发库。Muduo 安装方式取决于你的本地环境，项目 CMake 目前直接链接：
+
+```text
+muduo_net
+muduo_base
+protobuf
+pthread
+```
+
+## 构建
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+构建产物默认输出到：
+
+```text
+bin/server
+bin/client
+```
+
+## 运行
+
+启动服务端：
+
+```bash
+./bin/server
+```
+
+运行客户端压测：
+
+```bash
+./bin/client [sender_count] [messages_per_sender] [verbose] [wait_timeout_seconds]
+```
+
+示例：
+
+```bash
+./bin/client 16 1000 quiet 60
+```
+
+参数说明：
+
+```text
+sender_count          发送方客户端数量
+messages_per_sender   每个发送方发送的消息数
+verbose               传 verbose 时打印逐条收发日志；其他值表示关闭详细日志
+wait_timeout_seconds  等待 ACK/PUSH 完成的最大秒数
+```
+
+当前压测模型是：
+
+```text
+多个 sender -> 一个 receiver(uid=1)
+```
+
+因此所有 `CHAT_PUSH` 会集中到单个接收方连接。
+
+## 压测输出说明
+
+示例输出：
+
+```text
+Stress summary
+  send_elapsed_seconds
+  ack_elapsed_seconds
+  push_elapsed_seconds
+  total_elapsed_seconds
+  send_ok
+  send_failed
+  receiver_login_resps
+  receiver_chat_pushes
+  sender_login_resps
+  sender_acks
+  client_write_throughput
+  server_ack_throughput
+  receiver_push_throughput
+```
+
+关键字段：
+
+```text
+send_ok
+  客户端写入 socket 成功的消息数。
+
+sender_acks
+  发送方收到服务端 ACK 的数量。
+
+receiver_chat_pushes
+  接收方收到 CHAT_PUSH 的数量。
+```
+
+理想情况下：
+
+```text
+sender_acks == total_messages
+receiver_chat_pushes == total_messages
+```
+
+但当前客户端还没有按 `msg_id` 去重，服务端重投可能导致 `receiver_chat_pushes` 大于 `total_messages`。因此现阶段该值代表收到的 PUSH 包数量，不等价于唯一业务消息数量。
+
+## 当前性能观察
+
+当前在虚拟机中，单 worker 业务模型下，小规模压测可以完整闭环：
+
+```text
+./bin/client 16 200 quiet 60
+
+total_messages:        3200
+sender_acks:           3200
+receiver_chat_pushes:  3200
+```
+
+中高压力下会出现重复 PUSH：
+
+```text
+./bin/client 10 10000 quiet 60
+
+total_messages:        100000
+sender_acks:           100701
+receiver_chat_pushes:  129052
+```
+
+主要原因：
+
+```text
+接收端尚未按 msg_id 去重
+固定超时重投在队列积压时容易产生重复投递
+服务端当前是单业务 worker
+压测模型集中到单接收方连接
+```
+
+所以当前项目更适合验证可靠投递链路，而不是作为最终性能数据。
+
+## 开发记录
+
+开发过程记录见：
+
+```text
+record.md
+records/
+```
+
+当前重要记录：
+
+- `records/2026-05-02-protobuf-codec.md`
+- `records/2026-05-03-online-forwarding.md`
+- `records/2026-05-04-server-event-dispatcher-message-store-benchmark.md`
+- `records/2026-05-05-reliable-delivery-ack-retry-idempotency.md`
+
+## 后续计划
+
+优先级较高：
+
+1. 客户端按 `msg_id` 去重。
+2. `Acked / Failed` 消息清理，避免内存持续增长。
+3. 离线补发按 `created_at_ms` 排序。
+4. 调整重试策略，避免压测时重投风暴。
+5. 增加 inflight 限流。
+6. 降级或关闭服务端逐条日志。
+
+中长期：
+
+1. 接入 MySQL 持久化消息。
+2. 使用 Redis 维护在线状态或未 ACK 缓存。
+3. 增加 `/metrics` 指标接口。
+4. 心跳超时扫描。
+5. 多 worker shard 队列提升多核利用率。
+
+## 项目定位
+
+当前项目是一个内存版可靠消息投递服务原型，重点展示：
+
+```text
+网络编程
+Protobuf 协议
+并发队列
+ACK 确认
+幂等去重
+离线补偿
+超时重试
+状态机设计
+```
+
+它不是完整生产级 IM 系统。生产化还需要持久化、指标、限流、清理策略、更多测试和多实例扩展。
