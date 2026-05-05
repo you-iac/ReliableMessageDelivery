@@ -12,7 +12,7 @@ namespace {
 
 const uint64_t kRetryTimeoutMs = 1000;
 const int kMaxRetryCount = 3;
-const int kRetryScanIntervalMs = 500;
+const int kRetryScanIntervalMs = 1000;
 
 }  // namespace
 
@@ -100,10 +100,14 @@ bool Client::sendMessage(uint64_t to_uid, const std::string& msg) {
 
     // seq 用来让客户端和服务端 ACK 对上同一次请求；第一版先用进程内自增。
     static std::atomic<uint64_t> next_seq{2};
+    static std::atomic<uint64_t> next_client_msg_no{1};
 
     uint64_t seq = next_seq.fetch_add(1);
+    uint64_t msg_no = next_client_msg_no.fetch_add(1);
     std::string client_msg_id =
-        std::to_string(uid) + "-" + std::to_string(seq);
+        std::to_string(uid) + "-" +
+        std::to_string(nowMs()) + "-" +
+        std::to_string(msg_no);
     
     message::Envelope envelope = EnvelopeFactory::CreateChatRequest(
         seq, uid, to_uid, msg, client_msg_id);

@@ -2,9 +2,26 @@
 
 #include <muduo/base/Logging.h>
 
+#include <chrono>
+
 #include "Codec.h"
 #include "EnvelopeFactory.h"
 #include "EnvelopeInspector.h"
+
+namespace {
+
+const uint64_t kAckTimeoutMs = 3000;
+const int kDeliveryScanIntervalMs = 200;
+const int kMaxDeliveryRetryCount = 3;
+
+uint64_t NowMs() {
+    using namespace std::chrono;
+    return static_cast<uint64_t>(
+        duration_cast<milliseconds>(
+            system_clock::now().time_since_epoch()).count());
+}
+
+}  // namespace
 
 ServerEventDispatcher::ServerEventDispatcher() {
 }
@@ -24,6 +41,7 @@ void ServerEventDispatcher::start() {
 
     stopped_ = false;
     worker_ = std::thread(&ServerEventDispatcher::workerLoop, this);
+    delivery_worker_ = std::thread(&ServerEventDispatcher::deliveryLoop, this);
 }
 
 // 停止 worker，并等待已入队事件处理完成。
@@ -41,6 +59,9 @@ void ServerEventDispatcher::stop() {
     if (worker_.joinable()) {
         worker_.join();
     }
+    if (delivery_worker_.joinable()) {
+        delivery_worker_.join();
+    }
 }
 
 // 将客户端 Envelope 事件投递到业务队列。
@@ -53,6 +74,8 @@ bool ServerEventDispatcher::enqueueEnvelope(
             return false;
         }
 
+        // 网络线程只负责把已解码的 Envelope 入队，业务处理统一交给 worker。
+        // 这样 ChatServer 不需要持有业务状态，也避免在 Muduo IO 线程里做耗时逻辑。
         ServerEvent event;
         event.type = ServerEvent::Type::Envelope;
         event.conn = conn;
@@ -73,6 +96,8 @@ bool ServerEventDispatcher::enqueueConnectionClosed(
             return false;
         }
 
+        // 断开事件也进入同一个队列，保证同一连接上的 LOGIN_REQ/CHAT_REQ/断开按顺序生效。
+        // 否则可能出现连接已断开但稍后处理 LOGIN_REQ 又把用户标记为在线的竞态。
         ServerEvent event;
         event.type = ServerEvent::Type::ConnectionClosed;
         event.conn = conn;
@@ -88,11 +113,13 @@ void ServerEventDispatcher::workerLoop() {
     while (true) {
         ServerEvent event;
         {
+            //条件变量，等待队列非空或 stop() 被调用。
             std::unique_lock<std::mutex> lock(mutex_);
             not_empty_.wait(lock, [this] {
                 return stopped_ || !inbox_.empty();
             });
 
+            // stop() 只阻止新事件继续入队；已经入队的事件会先处理完再退出。
             if (stopped_ && inbox_.empty()) {
                 return;
             }
@@ -136,6 +163,7 @@ void ServerEventDispatcher::handle(const ServerEvent& event) {
 
 // 处理登录请求，并把 uid 绑定到当前连接。
 void ServerEventDispatcher::handleLogin(const ServerEvent& event) {
+    // 登录只是把 uid 绑定到当前 TCP 连接；当前项目没有注册/密码校验。
     bool ok = event.envelope.has_login_req() &&
               event.envelope.login_req().uid() != 0;
     std::string reason;
@@ -156,6 +184,7 @@ void ServerEventDispatcher::handleLogin(const ServerEvent& event) {
 
     if (ok) {
         LOG_INFO << "User online: uid=" << event.envelope.login_req().uid();
+        deliverPendingMessages(event.envelope.login_req().uid());
     }
 }
 
@@ -168,12 +197,14 @@ void ServerEventDispatcher::handleChat(const ServerEvent& event) {
 
     const message::ChatRequest& request = event.envelope.chat_req();
 
+    // 发送聊天前必须先登录。getUidByConn() 返回 0 表示该连接尚未绑定有效 uid。
     uint64_t uid = user_state_.getUidByConn(event.conn);
     if (uid == 0) {
         sendErrorAck(event.conn, event.envelope.seq(), "please login first");
         return;
     }
 
+    // from_uid 必须和连接登录身份一致，防止客户端伪造其他用户发送消息。
     if (request.from_uid() != uid) {
         sendErrorAck(event.conn,
                      event.envelope.seq(),
@@ -181,35 +212,62 @@ void ServerEventDispatcher::handleChat(const ServerEvent& event) {
         return;
     }
 
-    MessageRecord record = message_store_.createMessage(
+    CreateMessageResult create_result = message_store_.createMessage(
         request.from_uid(),
         request.to_uid(),
         request.content(),
         request.client_msg_id());
+    const MessageRecord& record = create_result.record;
 
-    muduo::net::TcpConnectionPtr target =
-        user_state_.getConnByUid(request.to_uid());
-    if (!target) {
+    if (!create_result.created) {
+        // 客户端超时重试会携带相同 client_msg_id。
+        // 命中幂等索引时只返回原 msg_id 的 ACK，不重复创建和投递消息。
         sendEnvelope(event.conn, EnvelopeFactory::CreateAck(
-            event.envelope.seq(), record.msg_id, true, "target user offline"));
+            event.envelope.seq(), record.msg_id, true, "duplicate message"));
         return;
     }
 
-    message::Envelope push = EnvelopeFactory::CreateChatPush(
-        event.envelope.seq(),
-        record.msg_id,
-        record.from_uid,
-        record.to_uid,
-        record.content);
-
-    sendEnvelope(target, push);
-    message_store_.markDelivered(record.msg_id);
+    tryDeliverMessage(record.msg_id, false);
+    // 这里的 ACK 是给发送方的“服务端已接收/处理”确认，不是接收方消费确认。
     sendEnvelope(event.conn, EnvelopeFactory::CreateAck(
         event.envelope.seq(), record.msg_id, true, ""));
 }
 
-// 处理 ACK；当前只记录日志，后续接入消息状态机。
+// 处理接收方 ACK，并更新消息消费状态。
 void ServerEventDispatcher::handleAck(const ServerEvent& event) {
+    if (!event.envelope.has_ack()) {
+        LOG_INFO << "Invalid ACK without payload";
+        return;
+    }
+
+    const message::Ack& ack = event.envelope.ack();
+    if (ack.msg_id() == 0) {
+        LOG_INFO << "Invalid ACK without msg_id: "
+                 << EnvelopeInspector::ToString(event.envelope);
+        return;
+    }
+
+    MessageRecord record;
+    if (!message_store_.getMessage(ack.msg_id(), &record)) {
+        LOG_INFO << "ACK for unknown msg_id=" << ack.msg_id();
+        return;
+    }
+
+    uint64_t uid = user_state_.getUidByConn(event.conn);
+    if (uid == 0 || uid != record.to_uid) {
+        LOG_INFO << "ACK uid mismatch. msg_id=" << ack.msg_id()
+                 << ", ack_uid=" << uid
+                 << ", expected_uid=" << record.to_uid;
+        return;
+    }
+
+    // 客户端收到 CHAT_PUSH 后回 ACK(ok=true)，服务端才把消息标记为已消费。
+    if (ack.ok()) {
+        message_store_.markAcked(ack.msg_id());
+    } else {
+        message_store_.markFailed(ack.msg_id());
+    }
+
     LOG_INFO << "Received ack: " << EnvelopeInspector::ToString(event.envelope);
 }
 
@@ -226,10 +284,80 @@ void ServerEventDispatcher::handleConnectionClosed(
              << event.conn->peerAddress().toIpPort();
 }
 
+void ServerEventDispatcher::deliveryLoop() {
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopped_) {
+                return;
+            }
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(kDeliveryScanIntervalMs));
+
+        std::vector<MessageRecord> timeout_records =
+            message_store_.getTimeoutDeliveredMessages(NowMs(), kAckTimeoutMs);
+
+        for (const MessageRecord& record : timeout_records) {
+            if (record.retry_count >= kMaxDeliveryRetryCount) {
+                message_store_.markFailed(record.msg_id);
+                continue;
+            }
+
+            tryDeliverMessage(record.msg_id, true);
+        }
+    }
+}
+
+void ServerEventDispatcher::deliverPendingMessages(uint64_t uid) {
+    std::vector<MessageRecord> pending_records =
+        message_store_.getPendingMessages(uid);
+
+    for (const MessageRecord& record : pending_records) {
+        tryDeliverMessage(record.msg_id, false);
+    }
+}
+
+bool ServerEventDispatcher::tryDeliverMessage(uint64_t msg_id, bool is_retry) {
+    MessageRecord record;
+    if (!message_store_.getMessage(msg_id, &record)) {
+        return false;
+    }
+
+    if (record.status == MessageStatus::Acked ||
+        record.status == MessageStatus::Failed) {
+        return false;
+    }
+
+    muduo::net::TcpConnectionPtr target =
+        user_state_.getConnByUid(record.to_uid);
+    if (!target || !target->connected()) {
+        message_store_.markPending(msg_id);
+        return false;
+    }
+
+    if (is_retry) {
+        message_store_.incrementRetryCount(msg_id);
+    }
+
+    message::Envelope push = EnvelopeFactory::CreateChatPush(
+        record.msg_id,
+        record.msg_id,
+        record.from_uid,
+        record.to_uid,
+        record.content);
+
+    sendEnvelope(target, push);
+    message_store_.markDelivered(msg_id);
+    return true;
+}
+
 // 按统一帧格式发送 Envelope。
 void ServerEventDispatcher::sendEnvelope(
     const muduo::net::TcpConnectionPtr& conn,
     const message::Envelope& envelope) {
+    // 所有业务回包都走统一 Codec，保证和客户端使用相同的 4 字节长度头帧格式。
     std::string frame = MessageCodec::Encode(envelope);
     if (frame.empty()) {
         LOG_INFO << "Encode failed: " << EnvelopeInspector::ToString(envelope);

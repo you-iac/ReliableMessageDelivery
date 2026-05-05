@@ -71,6 +71,7 @@ private:
     std::queue<ServerEvent> inbox_;
     
     void workerLoop();// worker 主循环：等待队列非空，取出请求，然后在锁外处理业务。
+    void deliveryLoop();// 后台投递循环：扫描 Delivered 超时消息并重投。
     
     void handle     (const ServerEvent& event);// 统一业务分发入口，根据事件类型或 Envelope.type() 调用具体处理函数。
     void handleLogin(const ServerEvent& event);// 处理 LOGIN_REQ。后续会接入 SessionService 完成 uid 和连接绑定
@@ -78,6 +79,9 @@ private:
     void handleAck  (const ServerEvent& event);// 处理客户端 ACK。后续会接入消息状态机和未 ACK 队列。
     void handleHeartbeat(const ServerEvent& event);// 处理心跳消息。后续会更新连接活跃时间，并定期清理长时间未心跳的连接。
     void handleConnectionClosed(const ServerEvent& event);// 处理连接断开事件。后续会清理用户在线状态。
+    
+    void deliverPendingMessages(uint64_t uid);// 用户上线后补发该用户的 Pending 消息。
+    bool tryDeliverMessage(uint64_t msg_id, bool is_retry);// 尝试投递一条消息，目标离线时保持 Pending。
     void sendEnvelope(const muduo::net::TcpConnectionPtr& conn,
                       const message::Envelope& envelope);
     void sendErrorAck(const muduo::net::TcpConnectionPtr& conn,
@@ -90,6 +94,7 @@ private:
     bool stopped_ = true;// true 表示 dispatcher 未运行或正在停止。
     
     std::thread worker_;    // 当前第一版的单 worker 线程。
+    std::thread delivery_worker_; // 后台投递线程，负责超时重投。
     UserStateService user_state_;
     MessageStore message_store_;
 };
