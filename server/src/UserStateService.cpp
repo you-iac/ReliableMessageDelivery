@@ -3,6 +3,7 @@
 #include <chrono>
 
 void UserStateService::addConnection(const muduo::net::TcpConnectionPtr& conn) {
+    // 空连接没有可登记的 TcpConnection*，直接忽略。
     if (!conn) {
         return;
     }
@@ -16,12 +17,14 @@ void UserStateService::addConnection(const muduo::net::TcpConnectionPtr& conn) {
 
 void UserStateService::removeConnection(
     const muduo::net::TcpConnectionPtr& conn) {
+    // 断开回调可能传入空连接，保持接口幂等。
     if (!conn) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = conn_states_.find(conn.get());
+    // 未登记连接无需清理。
     if (it == conn_states_.end()) {
         return;
     }
@@ -41,11 +44,13 @@ void UserStateService::removeConnection(
 
 bool UserStateService::bindUser(const muduo::net::TcpConnectionPtr& conn,
                                 uint64_t uid) {
+    // uid 使用 0 表示未登录，因此不能绑定为有效用户。
     if (!conn || uid == 0) {
         return false;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    // 允许在 addConnection 之前绑定，operator[] 会补建连接状态。
     UserState& state = conn_states_[conn.get()];
     state.conn = conn;
 
@@ -70,6 +75,7 @@ bool UserStateService::bindUser(const muduo::net::TcpConnectionPtr& conn,
         }
     }
 
+    // 更新当前连接的主状态表和 uid 在线索引，二者必须保持一致。
     state.uid = uid;
     state.state = UserConnectionState::Authenticated;
     state.last_active_ms = nowMs();
@@ -79,6 +85,7 @@ bool UserStateService::bindUser(const muduo::net::TcpConnectionPtr& conn,
 
 uint64_t UserStateService::getUidByConn(
     const muduo::net::TcpConnectionPtr& conn) const {
+    // 对外约定：0 表示没有可用的已认证用户。
     if (!conn) {
         return 0;
     }
@@ -96,6 +103,7 @@ uint64_t UserStateService::getUidByConn(
 muduo::net::TcpConnectionPtr UserStateService::getConnByUid(uint64_t uid) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = uid_to_conn_.find(uid);
+    // 未找到在线索引时返回空智能指针，调用方据此判断用户离线。
     if (it == uid_to_conn_.end()) {
         return muduo::net::TcpConnectionPtr();
     }
@@ -109,12 +117,14 @@ bool UserStateService::isAuthenticated(
 
 UserConnectionState UserStateService::getState(
     const muduo::net::TcpConnectionPtr& conn) const {
+    // 空连接没有用户绑定关系，按初始状态处理。
     if (!conn) {
         return UserConnectionState::Connected;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = conn_states_.find(conn.get());
+    // 未登记连接同样视为未认证连接。
     if (it == conn_states_.end()) {
         return UserConnectionState::Connected;
     }
@@ -123,6 +133,7 @@ UserConnectionState UserStateService::getState(
 
 void UserStateService::updateHeartbeat(
     const muduo::net::TcpConnectionPtr& conn) {
+    // 空连接无法更新活跃时间。
     if (!conn) {
         return;
     }
@@ -137,6 +148,7 @@ void UserStateService::updateHeartbeat(
 
 uint64_t UserStateService::nowMs() {
     using namespace std::chrono;
+    // 统一使用毫秒时间戳，方便与心跳超时阈值直接比较。
     return static_cast<uint64_t>(
         duration_cast<milliseconds>(
             system_clock::now().time_since_epoch()).count());
