@@ -10,8 +10,8 @@
 
 namespace {
 
-const uint64_t kRetryTimeoutMs = 1000;
-const int kMaxRetryCount = 3;
+const uint64_t kBaseRetryTimeoutMs = 2000;
+const int kMaxRetryCount = 5;//<最大重传次数
 const int kRetryScanIntervalMs = 1000;
 
 }  // namespace
@@ -35,7 +35,7 @@ bool Client::startClient(uint64_t user_uid) {
         pending_acks.clear();
     }
     {
-        // startClient 会等待 LOGIN_RESP；这里重置等待条件和结果。
+        // startClient 会等待 LOGIN_RESP；这里清空登录状态
         std::lock_guard<std::mutex> lock(login_mutex);
         login_done = false;
         login_ok = false;
@@ -281,11 +281,14 @@ void Client::retryLoop() {
             std::lock_guard<std::mutex> lock(pending_mutex);
             for (auto it = pending_acks.begin(); it != pending_acks.end();) {
                 PendingAck& pending = it->second;
-                if (now - pending.last_send_ms < kRetryTimeoutMs) {
+                // 重试间隔随已重试次数线性增加：1s、2s、3s...
+                uint64_t retry_timeout_ms =
+                    kBaseRetryTimeoutMs * (pending.retry_count + 1);
+                if (now - pending.last_send_ms < retry_timeout_ms) {
                     ++it;
                     continue;
                 }
-
+                // 如果重试次数已经达到上限，说明服务端可能永远处理不了这个请求了，直接放弃。
                 if (pending.retry_count >= kMaxRetryCount) {
                     if (verbose) {
                         std::cerr << "drop unacked message after retry limit: "
@@ -303,7 +306,7 @@ void Client::retryLoop() {
                 ++it;
             }
         }
-
+        // 锁外重试发送，避免发送过程中阻塞其他线程对 pending_acks 的访问。
         for (const auto& envelope : retry_messages) {
             if (stop.load()) {
                 return;

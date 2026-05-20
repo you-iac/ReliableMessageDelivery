@@ -13,7 +13,7 @@ namespace {
 const uint64_t kAckTimeoutMs = 3000;
 const int kDeliveryScanIntervalMs = 200;
 const int kMaxDeliveryRetryCount = 3;
-
+//获取当前时间
 uint64_t NowMs() {
     using namespace std::chrono;
     return static_cast<uint64_t>(
@@ -38,7 +38,7 @@ void ServerEventDispatcher::start() {
     if (!stopped_) {
         return;
     }
-
+    
     stopped_ = false;
     worker_ = std::thread(&ServerEventDispatcher::workerLoop, this);
     delivery_worker_ = std::thread(&ServerEventDispatcher::deliveryLoop, this);
