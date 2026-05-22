@@ -25,4 +25,6 @@ TestResults.xml
 bin
 build
 .idea
+.cache
+cmake-build-debug
 bench
