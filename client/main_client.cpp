@@ -55,15 +55,35 @@ int TotalSenderLoginResponses(
     return total;
 }
 
-}  // namespace
+void StopSendersConcurrently(std::vector<std::unique_ptr<Client>>& senders) {
+    const std::size_t kCloseGroupSize = 10;
+    std::vector<std::thread> close_workers;
+    close_workers.reserve((senders.size() + kCloseGroupSize - 1) /
+                          kCloseGroupSize);
 
-int main(int argc, char* argv[]) {
-    const int sender_count = argc > 1 ? ParsePositiveInt(argv[1], 8) : 8;
-    const int messages_per_sender =
-        argc > 2 ? ParsePositiveInt(argv[2], 100) : 100;
-    const bool verbose = argc > 3 && std::string(argv[3]) == "verbose";
-    const int wait_timeout_seconds =
-        argc > 4 ? ParsePositiveInt(argv[4], 30) : 30;
+    for (std::size_t begin = 0; begin < senders.size();
+         begin += kCloseGroupSize) {
+        std::size_t end = begin + kCloseGroupSize;
+        if (end > senders.size()) {
+            end = senders.size();
+        }
+
+        close_workers.emplace_back([&senders, begin, end] {
+            for (std::size_t i = begin; i < end; ++i) {
+                senders[i]->stopClient();
+            }
+        });
+    }
+
+    for (auto& worker : close_workers) {
+        worker.join();
+    }
+}
+
+int RunStressTest(int sender_count,
+                  int messages_per_sender,
+                  bool verbose,
+                  int wait_timeout_seconds) {
     const int total_messages = sender_count * messages_per_sender;
 
     std::cout << "stress config: senders=" << sender_count
@@ -89,6 +109,7 @@ int main(int argc, char* argv[]) {
         if (!sender->startClient(sender_uid)) {
             std::cerr << "failed to start sender uid=" << sender_uid << "\n";
             sender->stopClient();
+            StopSendersConcurrently(senders);
             receiver.stopClient();
             return 1;
         }
@@ -212,9 +233,7 @@ int main(int argc, char* argv[]) {
                   << " msg/s\n";
     }
 
-    for (auto& sender : senders) {
-        sender->stopClient();
-    }
+    StopSendersConcurrently(senders);
     receiver.stopClient();
 
     return (send_failed.load() == 0 &&
@@ -222,4 +241,20 @@ int main(int argc, char* argv[]) {
             receiver_counts.chat_pushes >= total_messages)
                ? 0
                : 1;
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+    const int sender_count = argc > 1 ? ParsePositiveInt(argv[1], 8) : 8;
+    const int messages_per_sender =
+        argc > 2 ? ParsePositiveInt(argv[2], 100) : 100;
+    const bool verbose = argc > 3 && std::string(argv[3]) == "verbose";
+    const int wait_timeout_seconds =
+        argc > 4 ? ParsePositiveInt(argv[4], 30) : 30;
+    
+    return RunStressTest(sender_count,
+                         messages_per_sender,
+                         verbose,
+                         wait_timeout_seconds);
 }
