@@ -267,8 +267,8 @@ void ServerEventDispatcher::handleAck(const ServerEvent& event) {
     } else {
         message_store_.markFailed(ack.msg_id());
     }
-
-    LOG_INFO << "Received ack: " << EnvelopeInspector::ToString(event.envelope);
+    
+    // LOG_INFO << "Received ack: " << EnvelopeInspector::ToString(event.envelope);
 }
 
 // 处理心跳，刷新连接活跃时间。
