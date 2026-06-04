@@ -68,18 +68,19 @@ void ServerEventDispatcher::stop() {
 bool ServerEventDispatcher::enqueueEnvelope(
             const muduo::net::TcpConnectionPtr& conn,
             const message::Envelope& envelope) {
+    // 网络线程只负责把已解码的 Envelope 入队，业务处理统一交给 worker。
+    // 这样 ChatServer 不需要持有业务状态，也避免在 Muduo IO 线程里做耗时逻辑。
+    ServerEvent event;
+    event.type = ServerEvent::Type::Envelope;
+    event.conn = conn;
+    event.envelope = envelope;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopped_) {
             return false;
         }
 
-        // 网络线程只负责把已解码的 Envelope 入队，业务处理统一交给 worker。
-        // 这样 ChatServer 不需要持有业务状态，也避免在 Muduo IO 线程里做耗时逻辑。
-        ServerEvent event;
-        event.type = ServerEvent::Type::Envelope;
-        event.conn = conn;
-        event.envelope = envelope;
+
         inbox_.push(event);
     }
 
@@ -217,6 +218,13 @@ void ServerEventDispatcher::handleChat(const ServerEvent& event) {
         request.to_uid(),
         request.content(),
         request.client_msg_id());
+    if (!create_result.ok) {
+        sendErrorAck(event.conn,
+                     event.envelope.seq(),
+                     "message store unavailable");
+        return;
+    }
+
     const MessageRecord& record = create_result.record;
 
     if (!create_result.created) {

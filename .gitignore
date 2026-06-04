@@ -24,6 +24,8 @@ TestResults.xml
 
 bin
 build
+.ide
+cmake-build-debug
 .idea
 .cache
 cmake-build-debug
