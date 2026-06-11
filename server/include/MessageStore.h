@@ -75,8 +75,8 @@ public:
     // 标记消息等待投递。目标用户离线或连接不可用时会回到 Pending。
     bool markPending(uint64_t msg_id);
 
-    // 标记消息已被接收方确认消费。
-    bool markAcked(uint64_t msg_id);
+    // 标记消息已被接收方确认消费；ack_uid 必须匹配消息接收方。
+    bool markAcked(uint64_t msg_id, uint64_t ack_uid);
 
     // 标记消息投递失败。
     bool markFailed(uint64_t msg_id);

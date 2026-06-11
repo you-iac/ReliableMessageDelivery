@@ -255,25 +255,17 @@ void ServerEventDispatcher::handleAck(const ServerEvent& event) {
         return;
     }
 
-    MessageRecord record;
-    if (!message_store_.getMessage(ack.msg_id(), record)) {
-        LOG_INFO << "ACK for unknown msg_id=" << ack.msg_id();
-        return;
-    }
-
     uint64_t uid = user_state_.getUidByConn(event.conn);
-    if (uid == 0 || uid != record.to_uid) {
-        LOG_INFO << "ACK uid mismatch. msg_id=" << ack.msg_id()
-                 << ", ack_uid=" << uid
-                 << ", expected_uid=" << record.to_uid;
+    if (uid == 0) {
+        LOG_INFO << "ACK from anonymous connection. msg_id=" << ack.msg_id();
         return;
     }
 
-    // 客户端收到 CHAT_PUSH 后回 ACK(ok=true)，服务端才把消息标记为已消费。
-    if (ack.ok()) {
-        message_store_.markAcked(ack.msg_id());
-    } else {
-        message_store_.markFailed(ack.msg_id());
+    // Redis 脚本内部校验 uid 是否匹配消息接收方，避免 ACK 路径额外读一次消息记录。
+    if (!message_store_.markAcked(ack.msg_id(), uid)) {
+        LOG_INFO << "ACK update rejected. msg_id=" << ack.msg_id()
+                 << ", ack_uid=" << uid;
+        return;
     }
     
     // LOG_INFO << "Received ack: " << EnvelopeInspector::ToString(event.envelope);

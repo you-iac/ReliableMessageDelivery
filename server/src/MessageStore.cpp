@@ -111,17 +111,20 @@ redis.call('ZADD', ARGV[3] .. to_uid, created_at_ms, ARGV[1])
 return 1
 )lua";
 
-// ACK 后消息进入终态，并从所有重投相关索引中移除。
+// ACK 后在 Redis 内校验接收方身份，匹配时才进入 Acked 终态。
 const char kMarkAckedScript[] = R"lua(
 local to_uid = redis.call('HGET', KEYS[1], 'to_uid')
 if not to_uid then
     return 0
 end
+if to_uid ~= ARGV[2] then
+    return 0
+end
 redis.call('HSET', KEYS[1],
     'status', 'Acked',
-    'acked_at_ms', ARGV[2])
+    'acked_at_ms', ARGV[3])
 redis.call('ZREM', KEYS[2], ARGV[1])
-redis.call('ZREM', ARGV[3] .. to_uid, ARGV[1])
+redis.call('ZREM', ARGV[4] .. to_uid, ARGV[1])
 return 1
 )lua";
 
@@ -379,6 +382,28 @@ RedisReplyPtr EvalMsgStateScript(redisContext* context,
         sizeof(kRedisPendingKeyPrefix) - 1)));
 }
 
+// 执行 ACK 状态脚本，额外传入 ack_uid 让 Redis 原子校验接收方身份。
+RedisReplyPtr EvalMarkAckedScript(redisContext* context,
+                                  uint64_t msg_id,
+                                  uint64_t ack_uid,
+                                  uint64_t timestamp_ms) {
+    std::string msg_key = MakeMessageKey(msg_id);
+    return RedisReplyPtr(static_cast<redisReply*>(redisCommand(
+        context,
+        "EVAL %b 2 %b %b %llu %llu %llu %b",
+        kMarkAckedScript,
+        sizeof(kMarkAckedScript) - 1,
+        msg_key.data(),
+        msg_key.size(),
+        kRedisDeliveredTimeoutKey,
+        sizeof(kRedisDeliveredTimeoutKey) - 1,
+        static_cast<unsigned long long>(msg_id),
+        static_cast<unsigned long long>(ack_uid),
+        static_cast<unsigned long long>(timestamp_ms),
+        kRedisPendingKeyPrefix,
+        sizeof(kRedisPendingKeyPrefix) - 1)));
+}
+
 // nullptr reply 通常意味着连接已断开；context->err 非 0 表示连接进入错误态。
 bool IsConnectionBroken(const redisContext* context, const redisReply* reply) {
     return context == nullptr || context->err != 0 || reply == nullptr;
@@ -489,17 +514,16 @@ bool MessageStore::markPending(uint64_t msg_id) {
 }
 
 // 接收方确认消费后，消息进入 Acked 状态并从重投相关索引中移除。
-bool MessageStore::markAcked(uint64_t msg_id) {
+bool MessageStore::markAcked(uint64_t msg_id, uint64_t ack_uid) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
         return false;
     }
 
-    RedisReplyPtr reply = EvalMsgStateScript(redis_,
-                                             kMarkAckedScript,
-                                             sizeof(kMarkAckedScript) - 1,
-                                             msg_id,
-                                             NowMs());
+    RedisReplyPtr reply = EvalMarkAckedScript(redis_,
+                                              msg_id,
+                                              ack_uid,
+                                              NowMs());
     if (IsConnectionBroken(redis_, reply.get())) {
         closeConnectionLocked();
         return false;
