@@ -81,7 +81,8 @@ private:
     void handleConnectionClosed(const ServerEvent& event);// 处理连接断开事件。后续会清理用户在线状态。
     
     void deliverPendingMessages(uint64_t uid);// 用户上线后补发该用户的 Pending 消息。
-    bool tryDeliverMessage(uint64_t msg_id, bool is_retry);// 尝试投递一条消息，目标离线时保持 Pending。
+    bool tryDeliverMessage(const MessageRecord& record);// 普通投递，目标离线时保持 Pending。
+    bool retryDeliverMessage(const MessageRecord& record);// 重试投递，发送前递增重试次数。
     void sendEnvelope(const muduo::net::TcpConnectionPtr& conn,
                       const message::Envelope& envelope);
     void sendErrorAck(const muduo::net::TcpConnectionPtr& conn,

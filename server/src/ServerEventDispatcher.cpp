@@ -235,7 +235,7 @@ void ServerEventDispatcher::handleChat(const ServerEvent& event) {
         return;
     }
 
-    tryDeliverMessage(record.msg_id, false);
+    tryDeliverMessage(record);
     // 这里的 ACK 是给发送方的“服务端已接收/处理”确认，不是接收方消费确认。
     sendEnvelope(event.conn, EnvelopeFactory::CreateAck(
         event.envelope.seq(), record.msg_id, true, ""));
@@ -313,7 +313,7 @@ void ServerEventDispatcher::deliveryLoop() {
                 continue;
             }
 
-            tryDeliverMessage(record.msg_id, true);
+            retryDeliverMessage(record);
         }
     }
 }
@@ -323,16 +323,11 @@ void ServerEventDispatcher::deliverPendingMessages(uint64_t uid) {
         message_store_.getPendingMessages(uid);
 
     for (const MessageRecord& record : pending_records) {
-        tryDeliverMessage(record.msg_id, false);
+        tryDeliverMessage(record);
     }
 }
 
-bool ServerEventDispatcher::tryDeliverMessage(uint64_t msg_id, bool is_retry) {
-    MessageRecord record;
-    if (!message_store_.getMessage(msg_id, record)) {
-        return false;
-    }
-
+bool ServerEventDispatcher::tryDeliverMessage(const MessageRecord& record) {
     if (record.status == MessageStatus::Acked ||
         record.status == MessageStatus::Failed) {
         return false;
@@ -341,12 +336,8 @@ bool ServerEventDispatcher::tryDeliverMessage(uint64_t msg_id, bool is_retry) {
     muduo::net::TcpConnectionPtr target =
         user_state_.getConnByUid(record.to_uid);
     if (!target || !target->connected()) {
-        message_store_.markPending(msg_id);
+        message_store_.markPending(record.msg_id);
         return false;
-    }
-
-    if (is_retry) {
-        message_store_.incrementRetryCount(msg_id);
     }
 
     message::Envelope push = EnvelopeFactory::CreateChatPush(
@@ -357,7 +348,34 @@ bool ServerEventDispatcher::tryDeliverMessage(uint64_t msg_id, bool is_retry) {
         record.content);
 
     sendEnvelope(target, push);
-    message_store_.markDelivered(msg_id);
+    message_store_.markDelivered(record.msg_id);
+    return true;
+}
+
+bool ServerEventDispatcher::retryDeliverMessage(const MessageRecord& record) {
+    if (record.status == MessageStatus::Acked ||
+        record.status == MessageStatus::Failed) {
+        return false;
+    }
+
+    muduo::net::TcpConnectionPtr target =
+        user_state_.getConnByUid(record.to_uid);
+    if (!target || !target->connected()) {
+        message_store_.markPending(record.msg_id);
+        return false;
+    }
+
+    message_store_.incrementRetryCount(record.msg_id);
+
+    message::Envelope push = EnvelopeFactory::CreateChatPush(
+        record.msg_id,
+        record.msg_id,
+        record.from_uid,
+        record.to_uid,
+        record.content);
+
+    sendEnvelope(target, push);
+    message_store_.markDelivered(record.msg_id);
     return true;
 }
 
