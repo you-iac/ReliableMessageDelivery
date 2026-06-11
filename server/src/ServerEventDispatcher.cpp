@@ -10,8 +10,8 @@
 
 namespace {
 
-const uint64_t kAckTimeoutMs = 3000;
-const int kDeliveryScanIntervalMs = 200;
+const uint64_t kAckTimeoutMs = 10000;
+const int kDeliveryScanIntervalMs = 1000;
 const int kMaxDeliveryRetryCount = 3;
 //获取当前时间
 uint64_t NowMs() {
