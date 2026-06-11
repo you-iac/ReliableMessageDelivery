@@ -256,7 +256,7 @@ void ServerEventDispatcher::handleAck(const ServerEvent& event) {
     }
 
     MessageRecord record;
-    if (!message_store_.getMessage(ack.msg_id(), &record)) {
+    if (!message_store_.getMessage(ack.msg_id(), record)) {
         LOG_INFO << "ACK for unknown msg_id=" << ack.msg_id();
         return;
     }
@@ -329,7 +329,7 @@ void ServerEventDispatcher::deliverPendingMessages(uint64_t uid) {
 
 bool ServerEventDispatcher::tryDeliverMessage(uint64_t msg_id, bool is_retry) {
     MessageRecord record;
-    if (!message_store_.getMessage(msg_id, &record)) {
+    if (!message_store_.getMessage(msg_id, record)) {
         return false;
     }
 

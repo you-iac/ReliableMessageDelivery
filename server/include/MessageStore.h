@@ -81,8 +81,8 @@ public:
     // 标记消息投递失败。
     bool markFailed(uint64_t msg_id);
 
-    // 按 msg_id 查询消息记录；out 为空或不存在时返回 false。
-    bool getMessage(uint64_t msg_id, MessageRecord* out);
+    // 按 msg_id 查询消息记录；不存在时返回 false。
+    bool getMessage(uint64_t msg_id, MessageRecord& out);
 
     // 增加消息重试次数。
     bool incrementRetryCount(uint64_t msg_id);

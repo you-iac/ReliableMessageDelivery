@@ -11,6 +11,7 @@
 
 namespace {
 
+// 返回当前毫秒时间戳，用作消息生命周期字段和 Redis zset score。
 uint64_t NowMs() {
     using namespace std::chrono;
     return static_cast<uint64_t>(
@@ -18,19 +19,23 @@ uint64_t NowMs() {
             system_clock::now().time_since_epoch()).count());
 }
 
+// 构造发送侧幂等索引的业务 key。
 std::string MakeClientMsgKey(uint64_t from_uid,
                              const std::string& client_msg_id) {
     return std::to_string(from_uid) + ":" + client_msg_id;
 }
 
+// 构造消息 hash 的 Redis key。
 std::string MakeMessageKey(uint64_t msg_id) {
     return "rmd:msg:" + std::to_string(msg_id);
 }
 
+// 构造接收方 Pending 有序集合的 Redis key。
 std::string MakePendingKey(uint64_t uid) {
     return "rmd:pending:" + std::to_string(uid);
 }
 
+// 幂等 key 加上固定前缀，避免和其他 Redis 数据结构冲突。
 std::string MakeIdempotencyKey(uint64_t from_uid,
                                const std::string& client_msg_id) {
     return "rmd:idem:" + MakeClientMsgKey(from_uid, client_msg_id);
@@ -43,6 +48,8 @@ const char kRedisMsgKeyPrefix[] = "rmd:msg:";
 const char kRedisPendingKeyPrefix[] = "rmd:pending:";
 const char kRedisDeliveredTimeoutKey[] = "rmd:delivered_timeout";
 
+// 原子地完成幂等检查、消息 ID 分配、消息 hash 写入和 Pending 索引写入。
+// 返回数组第一项表示是否新建：'1' 为新消息，'0' 为命中幂等记录。
 const char kCreateMessageScript[] = R"lua(
 local msg_id = redis.call('GET', KEYS[1])
 if msg_id then
@@ -77,6 +84,7 @@ return {'1', tostring(msg_id), ARGV[2], ARGV[3], ARGV[4], ARGV[5],
         'Pending', ARGV[6], '0', '0', '0'}
 )lua";
 
+// 标记 Delivered 时，同时移出 Pending 索引并加入超时扫描索引。
 const char kMarkDeliveredScript[] = R"lua(
 local to_uid = redis.call('HGET', KEYS[1], 'to_uid')
 if not to_uid then
@@ -90,6 +98,7 @@ redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
 return 1
 )lua";
 
+// 回到 Pending 时使用原 created_at_ms 作为 score，保持离线补发顺序稳定。
 const char kMarkPendingScript[] = R"lua(
 local to_uid = redis.call('HGET', KEYS[1], 'to_uid')
 if not to_uid then
@@ -102,6 +111,7 @@ redis.call('ZADD', ARGV[3] .. to_uid, created_at_ms, ARGV[1])
 return 1
 )lua";
 
+// ACK 后消息进入终态，并从所有重投相关索引中移除。
 const char kMarkAckedScript[] = R"lua(
 local to_uid = redis.call('HGET', KEYS[1], 'to_uid')
 if not to_uid then
@@ -115,6 +125,7 @@ redis.call('ZREM', ARGV[3] .. to_uid, ARGV[1])
 return 1
 )lua";
 
+// Failed 也是终态，需要清理 Pending 和 Delivered 超时索引。
 const char kMarkFailedScript[] = R"lua(
 local to_uid = redis.call('HGET', KEYS[1], 'to_uid')
 if not to_uid then
@@ -126,6 +137,7 @@ redis.call('ZREM', ARGV[3] .. to_uid, ARGV[1])
 return 1
 )lua";
 
+// 重试计数独立递增，便于投递线程在重试前更新统计。
 const char kIncrementRetryScript[] = R"lua(
 if redis.call('EXISTS', KEYS[1]) == 0 then
     return 0
@@ -134,6 +146,7 @@ redis.call('HINCRBY', KEYS[1], 'retry_count', 1)
 return 1
 )lua";
 
+// hiredis 的 redisReply 需要显式释放，这里用 unique_ptr 托管生命周期。
 struct RedisReplyDeleter {
     void operator()(redisReply* reply) const {
         if (reply != nullptr) {
@@ -144,7 +157,9 @@ struct RedisReplyDeleter {
 
 using RedisReplyPtr = std::unique_ptr<redisReply, RedisReplyDeleter>;
 
+// 建立到本机 Redis 的同步连接。失败时返回 nullptr，由调用方降级为操作失败。
 redisContext* ConnectRedis() {
+    // 避免 Redis 不可用时业务线程无限期阻塞。
     timeval timeout;
     timeout.tv_sec = 1;
     timeout.tv_usec = 500000;
@@ -162,6 +177,7 @@ redisContext* ConnectRedis() {
     return context;
 }
 
+// hiredis 可能把数字以 INTEGER 或 STRING 返回，统一转成字符串后再解析。
 bool ReplyToString(const redisReply* reply, std::string* out) {
     if (reply == nullptr || out == nullptr) {
         return false;
@@ -181,6 +197,7 @@ bool ReplyToString(const redisReply* reply, std::string* out) {
     return false;
 }
 
+// Redis hash 中的数字字段按字符串协议返回，解析失败代表记录格式异常。
 bool ParseUint64(const redisReply* reply, uint64_t* out) {
     std::string text;
     if (!ReplyToString(reply, &text) || text.empty()) {
@@ -197,6 +214,7 @@ bool ParseUint64(const redisReply* reply, uint64_t* out) {
     return true;
 }
 
+// retry_count 当前使用 int，保持和 MessageRecord 字段类型一致。
 bool ParseInt(const redisReply* reply, int* out) {
     std::string text;
     if (!ReplyToString(reply, &text) || text.empty()) {
@@ -213,6 +231,7 @@ bool ParseInt(const redisReply* reply, int* out) {
     return true;
 }
 
+// Redis 中状态以字符串保存，这里集中做协议文本到枚举的转换。
 bool ParseStatus(const redisReply* reply, MessageStatus* out) {
     std::string text;
     if (!ReplyToString(reply, &text)) {
@@ -239,6 +258,8 @@ bool ParseStatus(const redisReply* reply, MessageStatus* out) {
     return false;
 }
 
+// 按固定字段顺序把 HMGET/EVAL 返回值组装成 MessageRecord。
+// offset 用来跳过 create 脚本返回数组中的 created 标记位。
 bool BuildRecordFromFields(const redisReply* reply,
                            std::size_t offset,
                            MessageRecord* record) {
@@ -259,6 +280,7 @@ bool BuildRecordFromFields(const redisReply* reply,
            ParseInt(reply->element[offset + 9], &record->retry_count);
 }
 
+// create 脚本返回 created 标记和完整记录，业务层据此区分新建/重复消息。
 bool BuildCreateResult(const redisReply* reply, CreateMessageResult* result) {
     if (reply == nullptr || result == nullptr ||
         reply->type != REDIS_REPLY_ARRAY || reply->elements != 11) {
@@ -276,6 +298,7 @@ bool BuildCreateResult(const redisReply* reply, CreateMessageResult* result) {
     return true;
 }
 
+// 查询单条消息。字段顺序必须和 BuildRecordFromFields() 保持一致。
 bool FetchRecord(redisContext* context, uint64_t msg_id, MessageRecord* out) {
     if (context == nullptr || out == nullptr || msg_id == 0) {
         return false;
@@ -296,12 +319,14 @@ bool FetchRecord(redisContext* context, uint64_t msg_id, MessageRecord* out) {
     return BuildRecordFromFields(reply.get(), 0, out);
 }
 
+// 状态脚本约定返回整数 1 表示实际更新成功。
 bool ReplyIsTrue(const redisReply* reply) {
     return reply != nullptr &&
            reply->type == REDIS_REPLY_INTEGER &&
            reply->integer == 1;
 }
 
+// 执行创建消息脚本，把跨 key 的幂等、写入和索引维护放在 Redis 内原子完成。
 RedisReplyPtr EvalCreateMessage(redisContext* context,
                                 const std::string& idem_key,
                                 const std::string& pending_key,
@@ -332,6 +357,7 @@ RedisReplyPtr EvalCreateMessage(redisContext* context,
         static_cast<unsigned long long>(created_at_ms))));
 }
 
+// 执行消息状态转换脚本。几个状态脚本共享同一套 key/argv 布局。
 RedisReplyPtr EvalMsgStateScript(redisContext* context,
                                  const char* script,
                                  std::size_t script_len,
@@ -353,6 +379,7 @@ RedisReplyPtr EvalMsgStateScript(redisContext* context,
         sizeof(kRedisPendingKeyPrefix) - 1)));
 }
 
+// nullptr reply 通常意味着连接已断开；context->err 非 0 表示连接进入错误态。
 bool IsConnectionBroken(const redisContext* context, const redisReply* reply) {
     return context == nullptr || context->err != 0 || reply == nullptr;
 }
@@ -362,11 +389,13 @@ bool IsConnectionBroken(const redisContext* context, const redisReply* reply) {
 MessageStore::MessageStore() {
 }
 
+// 析构时持锁关闭连接，避免其他线程仍在使用 redis_。
 MessageStore::~MessageStore() {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     closeConnectionLocked();
 }
 
+// 调用方已持有 redis_mutex_；连接不存在或错误时重新建立连接。
 bool MessageStore::ensureConnectedLocked() {
     if (redis_ != nullptr && redis_->err == 0) {
         return true;
@@ -377,6 +406,7 @@ bool MessageStore::ensureConnectedLocked() {
     return redis_ != nullptr;
 }
 
+// 调用方已持有 redis_mutex_；关闭连接后把指针置空，便于后续重连。
 void MessageStore::closeConnectionLocked() {
     if (redis_ != nullptr) {
         redisFree(redis_);
@@ -384,6 +414,7 @@ void MessageStore::closeConnectionLocked() {
     }
 }
 
+// 创建消息或返回幂等命中的已有消息。失败时 result.ok 保持 false。
 CreateMessageResult MessageStore::createMessage(
     uint64_t from_uid,
     uint64_t to_uid,
@@ -395,6 +426,7 @@ CreateMessageResult MessageStore::createMessage(
         return result;
     }
 
+    // 幂等 key 和接收方 Pending 索引 key 由业务字段稳定生成。
     std::string idem_key = MakeIdempotencyKey(from_uid, client_msg_id);
     std::string pending_key = MakePendingKey(to_uid);
     RedisReplyPtr reply = EvalCreateMessage(redis_,
@@ -409,6 +441,7 @@ CreateMessageResult MessageStore::createMessage(
         closeConnectionLocked();
         return result;
     }
+    // Redis 返回错误或记录字段格式不符合预期时，统一视为创建失败。
     if (reply->type == REDIS_REPLY_ERROR ||
         !BuildCreateResult(reply.get(), &result)) {
         return CreateMessageResult();
@@ -417,6 +450,7 @@ CreateMessageResult MessageStore::createMessage(
     return result;
 }
 
+// 标记消息已投递给接收方，并加入 Delivered 超时扫描索引。
 bool MessageStore::markDelivered(uint64_t msg_id) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
@@ -435,6 +469,7 @@ bool MessageStore::markDelivered(uint64_t msg_id) {
     return ReplyIsTrue(reply.get());
 }
 
+// 目标离线或连接不可用时，将消息重新放回 Pending 索引。
 bool MessageStore::markPending(uint64_t msg_id) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
@@ -453,6 +488,7 @@ bool MessageStore::markPending(uint64_t msg_id) {
     return ReplyIsTrue(reply.get());
 }
 
+// 接收方确认消费后，消息进入 Acked 状态并从重投相关索引中移除。
 bool MessageStore::markAcked(uint64_t msg_id) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
@@ -471,6 +507,7 @@ bool MessageStore::markAcked(uint64_t msg_id) {
     return ReplyIsTrue(reply.get());
 }
 
+// 投递失败是终态，同样需要清理 Pending 和 Delivered 超时索引。
 bool MessageStore::markFailed(uint64_t msg_id) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
@@ -489,19 +526,21 @@ bool MessageStore::markFailed(uint64_t msg_id) {
     return ReplyIsTrue(reply.get());
 }
 
-bool MessageStore::getMessage(uint64_t msg_id, MessageRecord* out) {
+// 按 msg_id 读取完整消息记录。引用参数只在返回 true 时可用。
+bool MessageStore::getMessage(uint64_t msg_id, MessageRecord& out) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
         return false;
     }
 
-    bool ok = FetchRecord(redis_, msg_id, out);
+    bool ok = FetchRecord(redis_, msg_id, &out);
     if (redis_ != nullptr && redis_->err != 0) {
         closeConnectionLocked();
     }
     return ok;
 }
 
+// 增加消息重试次数；消息不存在时脚本返回 0。
 bool MessageStore::incrementRetryCount(uint64_t msg_id) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
@@ -523,6 +562,7 @@ bool MessageStore::incrementRetryCount(uint64_t msg_id) {
     return ReplyIsTrue(reply.get());
 }
 
+// 查询某个接收方所有 Pending 消息。当前实现先取索引，再逐条校验记录。
 std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
     std::vector<MessageRecord> result;
     std::lock_guard<std::mutex> lock(redis_mutex_);
@@ -548,6 +588,7 @@ std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
     for (std::size_t i = 0; i < reply->elements; ++i) {
         uint64_t msg_id = 0;
         MessageRecord record;
+        // 再次校验 to_uid/status，避免索引残留或状态变更导致补发错误消息。
         if (ParseUint64(reply->element[i], &msg_id) &&
             FetchRecord(redis_, msg_id, &record) &&
             record.to_uid == to_uid &&
@@ -563,6 +604,7 @@ std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
     return result;
 }
 
+// 查询 Delivered 且 ACK 等待超时的消息，用于后台重投线程。
 std::vector<MessageRecord> MessageStore::getTimeoutDeliveredMessages(
     uint64_t now_ms,
     uint64_t timeout_ms) {
@@ -573,6 +615,7 @@ std::vector<MessageRecord> MessageStore::getTimeoutDeliveredMessages(
     }
 
     uint64_t max_score = now_ms >= timeout_ms ? now_ms - timeout_ms : 0;
+    // delivered_at_ms 作为 zset score，所以 0..max_score 即超时候选集合。
     RedisReplyPtr reply(static_cast<redisReply*>(redisCommand(
         redis_,
         "ZRANGEBYSCORE %b 0 %llu",
@@ -591,6 +634,7 @@ std::vector<MessageRecord> MessageStore::getTimeoutDeliveredMessages(
     for (std::size_t i = 0; i < reply->elements; ++i) {
         uint64_t msg_id = 0;
         MessageRecord record;
+        // 候选集合只是索引结果，最终仍以消息 hash 中的状态和时间为准。
         if (!ParseUint64(reply->element[i], &msg_id) ||
             !FetchRecord(redis_, msg_id, &record)) {
             if (redis_ != nullptr && redis_->err != 0) {
