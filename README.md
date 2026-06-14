@@ -495,7 +495,7 @@ docker.m.daocloud.io/library/debian:bookworm-slim
 docker.m.daocloud.io/library/redis:7-alpine
 ```
 
-容器内 `apt-get` 默认使用 USTC Debian 镜像源安装编译依赖。
+容器内 `apt-get` 默认使用 USTC Debian 镜像源安装编译依赖。Muduo 不依赖 apt 包，Dockerfile 会从 `chenshuo/muduo` 源码编译并安装到 `/usr/local`。
 
 默认启动两个容器：
 
