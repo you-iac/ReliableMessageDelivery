@@ -352,7 +352,7 @@ bool ServerEventDispatcher::retryDeliverMessage(const MessageRecord& record) {
 
     muduo::net::TcpConnectionPtr target =
         user_state_.getConnByUid(record.to_uid);
-    if (!target || !target->connected()) {
+    if (!target || !target->connected()) {//如果用户不在线，标记为待投递状态。
         message_store_.markPending(record.msg_id);
         return false;
     }

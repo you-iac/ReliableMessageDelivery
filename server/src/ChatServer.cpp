@@ -104,7 +104,7 @@ void ChatServer::onMessage(const TcpConnectionPtr& conn,
 
     // 解码完成后再分发业务，避免业务处理时长占住连接表锁。
     for (const auto& envelope : envelopes) {
-        LOG_INFO << "Get message: " << EnvelopeInspector::ToString(envelope);
+        // LOG_INFO << "Get message: " << EnvelopeInspector::ToString(envelope);
         dispatcher_.enqueueEnvelope(conn, envelope);
     }
 
