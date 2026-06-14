@@ -329,6 +329,13 @@ pthread
 Redis 127.0.0.1:6379
 ```
 
+也可以通过环境变量覆盖 Redis 地址，Docker Compose 会使用这两个变量连接 Redis 服务容器：
+
+```text
+RMD_REDIS_HOST
+RMD_REDIS_PORT
+```
+
 ## 构建
 
 ```bash
@@ -478,6 +485,88 @@ redis-cli --scan --pattern "rmd:*" | xargs -r redis-cli DEL
 ```
 
 如果当前 Redis DB 只给本项目使用，也可以使用 `redis-cli FLUSHDB`。
+
+## Docker 运行
+
+项目提供了 `Dockerfile` 和 `docker-compose.yml`，默认使用 DaoCloud 镜像源拉取基础镜像和 Redis 镜像：
+
+```text
+docker.m.daocloud.io/library/debian:bookworm-slim
+docker.m.daocloud.io/library/redis:7-alpine
+```
+
+容器内 `apt-get` 默认使用 USTC Debian 镜像源安装编译依赖。
+
+默认启动两个容器：
+
+```text
+server  ReliableMessageDelivery 服务端，监听 8080
+redis   Redis 7，开启 AOF，数据保存到 redis-data volume，不默认暴露宿主机端口
+```
+
+构建并启动：
+
+```bash
+docker compose up --build
+```
+
+后台启动：
+
+```bash
+docker compose up --build -d
+```
+
+查看日志：
+
+```bash
+docker compose logs -f server
+```
+
+进入 Redis 容器排查数据：
+
+```bash
+docker compose exec redis redis-cli
+```
+
+服务端端口会映射到宿主机：
+
+```text
+localhost:8080
+```
+
+运行一次容器内压测：
+
+```bash
+docker compose exec server /app/bin/client 16 1000 quiet 60
+```
+
+停止服务但保留 Redis 数据：
+
+```bash
+docker compose down
+```
+
+停止服务并删除 Redis volume：
+
+```bash
+docker compose down -v
+```
+
+如果只想构建镜像，不启动服务：
+
+```bash
+docker build -t reliable-message-delivery:local .
+```
+
+如果当前机器访问 Docker Hub 超时，可以通过环境变量替换基础镜像和 Redis 镜像：
+
+```bash
+RMD_BASE_IMAGE=<你的镜像源>/library/debian:bookworm-slim \
+RMD_REDIS_IMAGE=<你的镜像源>/library/redis:7-alpine \
+docker compose up --build
+```
+
+也可以把上面两个变量写入项目根目录的 `.env` 文件，`docker compose` 会自动读取。
 
 ## 开发记录
 

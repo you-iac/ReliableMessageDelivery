@@ -1,0 +1,11 @@
+.git
+build/
+bin/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.o
+*.a
+*.so
+records/
+record.md

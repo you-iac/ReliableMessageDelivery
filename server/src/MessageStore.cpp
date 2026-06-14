@@ -41,8 +41,8 @@ std::string MakeIdempotencyKey(uint64_t from_uid,
     return "rmd:idem:" + MakeClientMsgKey(from_uid, client_msg_id);
 }
 
-const char kRedisHost[] = "127.0.0.1";
-const int kRedisPort = 6379;
+const char kDefaultRedisHost[] = "127.0.0.1";
+const int kDefaultRedisPort = 6379;
 const char kRedisMsgNextIdKey[] = "rmd:msg:next_id";
 const char kRedisMsgKeyPrefix[] = "rmd:msg:";
 const char kRedisPendingKeyPrefix[] = "rmd:pending:";
@@ -160,15 +160,35 @@ struct RedisReplyDeleter {
 
 using RedisReplyPtr = std::unique_ptr<redisReply, RedisReplyDeleter>;
 
-// 建立到本机 Redis 的同步连接。失败时返回 nullptr，由调用方降级为操作失败。
+const char* RedisHost() {
+    const char* host = std::getenv("RMD_REDIS_HOST");
+    return (host != nullptr && host[0] != '\0') ? host : kDefaultRedisHost;
+}
+
+int RedisPort() {
+    const char* text = std::getenv("RMD_REDIS_PORT");
+    if (text == nullptr || text[0] == '\0') {
+        return kDefaultRedisPort;
+    }
+
+    char* end = nullptr;
+    long port = std::strtol(text, &end, 10);
+    if (end == nullptr || *end != '\0' || port <= 0 || port > 65535) {
+        return kDefaultRedisPort;
+    }
+
+    return static_cast<int>(port);
+}
+
+// 建立到 Redis 的同步连接。失败时返回 nullptr，由调用方降级为操作失败。
 redisContext* ConnectRedis() {
     // 避免 Redis 不可用时业务线程无限期阻塞。
     timeval timeout;
     timeout.tv_sec = 1;
     timeout.tv_usec = 500000;
 
-    redisContext* context = redisConnectWithTimeout(kRedisHost,
-                                                    kRedisPort,
+    redisContext* context = redisConnectWithTimeout(RedisHost(),
+                                                    RedisPort(),
                                                     timeout);
     if (context == nullptr) {
         return nullptr;
