@@ -364,6 +364,17 @@ void Client::handleChatPush(const message::Envelope& envelope) {
         return;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(login_mutex);
+        if (!login_ok) {
+            if (verbose) {
+                std::cerr << "drop chat push before login success: "
+                          << EnvelopeInspector::ToString(envelope) << "\n";
+            }
+            return;
+        }
+    }
+
     // CHAT_PUSH 是真正需要业务层读取的消息，因此进入 message_queue。
     ++chat_push_count;
     pushMessage(envelope);

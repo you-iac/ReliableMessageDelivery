@@ -173,10 +173,7 @@ int RunStressTest(int sender_count,
             push_completed_at = now;
         }
 
-        if (ack_done && push_done) {
-            break;
-        }
-
+        // 即使本轮计数已经达标，也继续等到超时，方便 receiver 消费历史 Pending。
         int waited_seconds = static_cast<int>(
             std::chrono::duration_cast<std::chrono::seconds>(
                 now - wait_started_at).count());
@@ -257,4 +254,8 @@ int main(int argc, char* argv[]) {
                          messages_per_sender,
                          verbose,
                          wait_timeout_seconds);
+    // Client c;
+    // c.startClient(1);
+    // sleep(1000 * 60);
+    // c.stopClient();
 }
