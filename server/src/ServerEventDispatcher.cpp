@@ -313,7 +313,7 @@ void ServerEventDispatcher::deliveryLoop() {
 void ServerEventDispatcher::deliverPendingMessages(uint64_t uid) {
     std::vector<MessageRecord> pending_records =
         message_store_.getPendingMessages(uid);
-
+    LOG_INFO << "tryDeliverMessage " << "size:" <<  pending_records.size();
     for (const MessageRecord& record : pending_records) {
         tryDeliverMessage(record);
     }
@@ -324,7 +324,7 @@ bool ServerEventDispatcher::tryDeliverMessage(const MessageRecord& record) {
         record.status == MessageStatus::Failed) {
         return false;
     }
-
+    
     muduo::net::TcpConnectionPtr target =
         user_state_.getConnByUid(record.to_uid);
     if (!target || !target->connected()) {

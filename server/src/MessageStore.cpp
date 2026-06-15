@@ -8,6 +8,7 @@
 #include <sys/time.h>
 
 #include <hiredis/hiredis.h>
+#include <muduo/base/Logging.h>
 
 namespace {
 
@@ -611,6 +612,8 @@ std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
     std::vector<MessageRecord> result;
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!ensureConnectedLocked()) {
+        LOG_INFO << "getPendingMessages failed: redis unavailable, to_uid="
+                 << to_uid;
         return result;
     }
 
@@ -622,27 +625,77 @@ std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
         pending_key.size())));
 
     if (IsConnectionBroken(redis_, reply.get())) {
+        LOG_INFO << "getPendingMessages failed: ZRANGE pending key failed, key="
+                 << pending_key
+                 << ", redis_err="
+                 << (redis_ != nullptr ? redis_->errstr : "null redis context");
         closeConnectionLocked();
         return result;
     }
     if (reply->type != REDIS_REPLY_ARRAY) {
+        LOG_INFO << "getPendingMessages failed: unexpected ZRANGE reply type, key="
+                 << pending_key << ", reply_type=" << reply->type;
         return result;
     }
 
+    std::size_t parse_failed = 0;
+    std::size_t fetch_failed = 0;
+    std::size_t stale_records = 0;
+    std::size_t first_bad_index = 0;
+    uint64_t first_bad_msg_id = 0;
+    bool has_bad_sample = false;
+
     for (std::size_t i = 0; i < reply->elements; ++i) {
         uint64_t msg_id = 0;
+        if (!ParseUint64(reply->element[i], &msg_id)) {
+            ++parse_failed;
+            if (!has_bad_sample) {
+                first_bad_index = i;
+                has_bad_sample = true;
+            }
+            continue;
+        }
+
         MessageRecord record;
+        if (!FetchRecord(redis_, msg_id, &record)) {
+            ++fetch_failed;
+            if (!has_bad_sample) {
+                first_bad_index = i;
+                first_bad_msg_id = msg_id;
+                has_bad_sample = true;
+            }
+            if (redis_ != nullptr && redis_->err != 0) {
+                LOG_INFO << "getPendingMessages failed: fetch record failed, key="
+                         << pending_key << ", msg_id=" << msg_id
+                         << ", redis_err=" << redis_->errstr;
+                closeConnectionLocked();
+                break;
+            }
+            continue;
+        }
+
         // 再次校验 to_uid/status，避免索引残留或状态变更导致补发错误消息。
-        if (ParseUint64(reply->element[i], &msg_id) &&
-            FetchRecord(redis_, msg_id, &record) &&
-            record.to_uid == to_uid &&
-            record.status == MessageStatus::Pending) {
+        if (record.to_uid == to_uid && record.status == MessageStatus::Pending) {
             result.push_back(record);
+        } else {
+            ++stale_records;
+            if (!has_bad_sample) {
+                first_bad_index = i;
+                first_bad_msg_id = msg_id;
+                has_bad_sample = true;
+            }
         }
-        if (redis_ != nullptr && redis_->err != 0) {
-            closeConnectionLocked();
-            break;
-        }
+    }
+
+    if (parse_failed > 0 || fetch_failed > 0 || stale_records > 0) {
+        LOG_INFO << "getPendingMessages skipped invalid pending entries, key="
+                 << pending_key << ", total_index_entries=" << reply->elements
+                 << ", valid_records=" << result.size()
+                 << ", parse_failed=" << parse_failed
+                 << ", fetch_failed=" << fetch_failed
+                 << ", stale_records=" << stale_records
+                 << ", first_bad_index=" << first_bad_index
+                 << ", first_bad_msg_id=" << first_bad_msg_id;
     }
 
     return result;
