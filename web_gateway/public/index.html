@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reliable Message Delivery</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="app-root">
+    <section id="auth-view" class="auth-view mode-login" aria-label="账号登录和注册">
+      <div class="auth-card">
+        <section class="auth-pane form-pane login-pane" aria-label="登录账号">
+          <form id="login-form" class="auth-form" autocomplete="on">
+            <p class="eyebrow">Reliable Message Delivery</p>
+            <h1>登录账号</h1>
+            <p class="auth-hint">使用用户 ID 和密码进入聊天演示。</p>
+
+            <label for="login-user-id">用户 ID</label>
+            <input id="login-user-id" name="user_id" type="number" min="1" value="1" required>
+
+            <label for="login-password">密码</label>
+            <input id="login-password" name="password" type="password" value="rmd-demo" required>
+
+            <p id="login-status" class="form-status" data-tone="idle">请输入账号信息</p>
+            <button id="login-button" type="submit">SIGN IN</button>
+          </form>
+        </section>
+
+        <section class="auth-pane prompt-pane signup-prompt" aria-label="切换到注册">
+          <div>
+            <h2>Hello Friend!</h2>
+            <p>还没有账号？创建一个账号后再进入聊天世界。</p>
+            <button id="show-register-button" type="button" class="ghost-button">SIGN UP</button>
+          </div>
+        </section>
+
+        <section class="auth-pane prompt-pane login-prompt" aria-label="切换到登录">
+          <div>
+            <h2>Welcome Back!</h2>
+            <p>已经有账号了？回到登录页继续聊天。</p>
+            <button id="show-login-button" type="button" class="ghost-button">SIGN IN</button>
+          </div>
+        </section>
+
+        <section class="auth-pane form-pane register-pane" aria-label="创建账号">
+          <form id="register-form" class="auth-form" autocomplete="on">
+            <p class="eyebrow">New Account</p>
+            <h1>创建账号</h1>
+            <p class="auth-hint">第一版先用默认密码，后续可接入数据库。</p>
+
+            <label for="register-user-id">用户 ID</label>
+            <input id="register-user-id" name="user_id" type="number" min="1" value="2" required>
+
+            <label for="register-password">密码</label>
+            <input id="register-password" name="password" type="password" value="rmd-demo" required>
+
+            <label for="register-confirm-password">确认密码</label>
+            <input id="register-confirm-password" name="confirm_password" type="password" value="rmd-demo" required>
+
+            <p id="register-status" class="form-status" data-tone="idle">默认密码: rmd-demo</p>
+            <button id="register-button" type="submit">SIGN UP</button>
+          </form>
+        </section>
+      </div>
+    </section>
+
+    <section id="chat-view" class="chat-view hidden" aria-label="聊天主界面">
+      <aside class="conversation-sidebar" aria-label="会话列表">
+        <header class="sidebar-header">
+          <div>
+            <p class="eyebrow">RMD Chat</p>
+            <h2 id="current-user-title">未登录</h2>
+          </div>
+          <button id="logout-button" type="button" class="icon-button" title="退出登录">退出</button>
+        </header>
+
+        <section class="connection-panel" aria-label="连接状态">
+          <div>
+            <span>HTTP</span>
+            <strong id="chat-login-status" data-tone="idle">未登录</strong>
+          </div>
+          <div>
+            <span>WebSocket</span>
+            <strong id="ws-status" data-tone="idle">未连接</strong>
+          </div>
+          <div>
+            <span>Session</span>
+            <strong id="session-id">-</strong>
+          </div>
+        </section>
+
+        <form id="new-chat-form" class="new-chat-form">
+          <label for="new-peer-id">新建聊天</label>
+          <div>
+            <input id="new-peer-id" type="number" min="1" placeholder="输入 UID" required>
+            <button type="submit">开始</button>
+          </div>
+        </form>
+
+        <ol id="conversation-list" class="conversation-list" aria-label="聊天对象列表"></ol>
+      </aside>
+
+      <section class="chat-main" aria-label="聊天内容">
+        <header class="chat-header">
+          <div>
+            <h2 id="conversation-title">选择一个聊天对象</h2>
+            <p id="conversation-subtitle">左侧新建或选择会话后开始发送消息</p>
+          </div>
+          <button id="clear-button" type="button" class="secondary-button">清空当前会话</button>
+        </header>
+
+        <div id="empty-chat" class="empty-chat">
+          <h3>还没有选择会话</h3>
+          <p>在左侧输入目标 UID 开始聊天，或等待别人给你发消息。</p>
+        </div>
+
+        <ol id="message-list" class="message-list" aria-live="polite"></ol>
+
+        <form id="send-form" class="composer">
+          <textarea id="message-input" rows="2" placeholder="输入文本消息" required disabled></textarea>
+          <button id="send-button" type="submit" disabled>发送</button>
+        </form>
+      </section>
+    </section>
+  </main>
+
+  <template id="conversation-template">
+    <li>
+      <button type="button" class="conversation-item">
+        <span class="avatar"></span>
+        <span class="conversation-info">
+          <strong class="conversation-name"></strong>
+          <span class="conversation-preview"></span>
+        </span>
+        <span class="conversation-badge"></span>
+      </button>
+    </li>
+  </template>
+
+  <template id="message-template">
+    <li class="message-item">
+      <div class="bubble">
+        <div class="message-meta"></div>
+        <div class="message-content"></div>
+        <div class="message-status"></div>
+      </div>
+    </li>
+  </template>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
