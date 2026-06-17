@@ -1,7 +1,15 @@
+/*
+ * Gateway 入口架构位置：
+ * server.ts 是 Web Gateway 的组合入口，负责同时承载静态前端页面、HTTP 登录/注册
+ * 接口，以及 /ws WebSocket Upgrade。当前 WebSocket 模块先做浏览器侧 mock 投递；
+ * 后续接入 IMServer 时，会从这里继续组装 ImClient 和内部 TCP + Protobuf 通道。
+ */
 import { createReadStream, promises as fsPromises } from "fs";
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { extname, join, normalize, resolve } from "path";
 import { AuthService } from "./AuthService";
+import { GatewayWebSocketServer } from "./WebSocketServer";
+import { WsSessionManager } from "./WsSessionManager";
 
 const HOST = process.env.WEB_GATEWAY_HOST || "127.0.0.1";
 const PORT = Number(process.env.WEB_GATEWAY_PORT || 3000);
@@ -9,6 +17,7 @@ const TOKEN_TTL_MS = Number(process.env.TOKEN_TTL_MS || 2 * 60 * 60 * 1000);
 const PUBLIC_DIR = resolve(__dirname, "..", "public");
 
 const authService = new AuthService(TOKEN_TTL_MS);
+const sessionManager = new WsSessionManager();
 
 type JsonObject = Record<string, unknown>;
 
@@ -123,6 +132,8 @@ function contentType(filePath: string): string {
       return "application/octet-stream";
   }
 }
+
+new GatewayWebSocketServer(server, authService, sessionManager);
 
 server.listen(PORT, HOST, () => {
   console.log(`web gateway listening on http://${HOST}:${PORT}`);

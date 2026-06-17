@@ -9,7 +9,11 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.7.1",
     "typescript": "^5.4.2"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
   }
 }
