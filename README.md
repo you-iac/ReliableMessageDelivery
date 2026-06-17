@@ -1,8 +1,121 @@
 # ReliableMessageDelivery
 
-ReliableMessageDelivery 是一个可靠消息投递原型项目。核心后端使用 C++11 实现，重点验证即时通信场景里的消息可靠性：在线投递、离线暂存、上线补发、ACK、超时重试、幂等去重和消息状态追踪。
+```text
++--------------------------------------------------------------------------------+
+|                                                                                |
+|   RRRRRRRR      MM      MM      DDDDDDDD                                       |
+|   RR     RR     MMM    MMM      DD     DD                                      |
+|   RR     RR     MMMM  MMMM      DD      DD                                     |
+|   RRRRRRRR      MM MMMM MM      DD      DD                                     |
+|   RR   RR       MM  MM  MM      DD      DD                                     |
+|   RR    RR      MM      MM      DD     DD                                      |
+|   RR     RR     MM      MM      DDDDDDDD                                       |
+|                                                                                |
+|   Reliable Message Delivery                                                    |
+|   C++ IMServer  +  Redis MessageStore  +  Web Gateway                          |
+|                                                                                |
++--------------------------------------------------------------------------------+
+```
 
-当前项目已经新增 `web_gateway/`，用于提供浏览器聊天演示界面。浏览器不直接连接 C++ IMServer，而是先连接 Web Gateway，再由 Gateway 使用现有 TCP/Protobuf 协议连接 IMServer。
+
+`C++11` `Muduo` `Protobuf` `Redis` `Node.js` `TypeScript` `WebSocket`
+
+## 简介
+
+ReliableMessageDelivery 是一个消息项目，用来验证即时通信场景里的关键链路：在线投递、离线暂存、上线补发、发送方 ACK、接收方 ACK、超时重试、幂等去重和消息状态追踪。
+
+项目核心后端是 C++11 IMServer，消息账本使用 Redis 保存。当前已经新增 `web_gateway/`，用于提供浏览器聊天演示界面：浏览器只连接 Web Gateway，Gateway 再通过现有 TCP/Protobuf 协议连接 C++ IMServer。
+
+## 技术栈
+
+| 层级 | 技术 | 作用 |
+| --- | --- | --- |
+| 浏览器前端 | HTML / CSS / JavaScript | 登录、注册、聊天演示界面 |
+| Web Gateway | Node.js / TypeScript | HTTP API、静态页面、WebSocket 接入、协议转换 |
+| 网关长连接 | WebSocket | 浏览器和 Gateway 之间的实时双向通信 |
+| 内部协议 | TCP / Protobuf | Gateway、C++ 客户端和 IMServer 之间的通信协议 |
+| 后端服务 | C++11 / Muduo | 长连接管理、消息投递、ACK 处理、重试调度 |
+| 消息存储 | Redis | 消息账本、Pending 索引、Delivered 超时索引、幂等索引 |
+| 构建工具 | CMake / npm / tsc | C++ 后端和 TypeScript 网关构建 |
+
+## 项目图表
+
+### 整体链路
+
+```text
++------------------+       HTTP / WebSocket       +------------------------+
+|                  |  -------------------------->  |                        |
+|     Browser      |                               |      Web Gateway       |
+|                  |  <--------------------------  |  Node.js + TypeScript  |
++------------------+       JSON messages           +-----------+------------+
+                                                              |
+                                                              | TCP
+                                                              | Protobuf Envelope
+                                                              v
+                                                   +----------+-----------+
+                                                   |                      |
+                                                   |     C++ IMServer     |
+                                                   |   Muduo / C++11      |
+                                                   |                      |
+                                                   +----------+-----------+
+                                                              |
+                                                              | Redis command
+                                                              v
+                                                   +----------+-----------+
+                                                   |                      |
+                                                   |  Redis MessageStore  |
+                                                   |                      |
+                                                   +----------------------+
+```
+
+### 消息投递闭环
+
+```text
+Browser A
+  |
+  | send_message
+  v
+Gateway A
+  |
+  | CHAT_REQ
+  v
+IMServer ---------------> Redis
+  |
+  | ACK to sender
+  v
+Gateway A
+  |
+  | send_ack
+  v
+Browser A
+
+IMServer
+  |
+  | CHAT_PUSH
+  v
+Gateway B
+  |
+  | message
+  v
+Browser B
+  |
+  | message_ack
+  v
+Gateway B
+  |
+  | ACK
+  v
+IMServer
+```
+
+### 第一版网关连接模型
+
+```text
+1 个浏览器 WebSocket 用户
+  -> 1 个 Gateway Session
+  -> 1 条到 IMServer 的 TCP/Protobuf 连接
+  -> IMServer 继续保持 uid -> TCP connection 模型
+```
 
 ## 当前架构
 
