@@ -1,140 +1,259 @@
 # ReliableMessageDelivery
 
-ReliableMessageDelivery 是一个 C++11 实现的可靠消息投递服务原型，重点不是完整聊天业务，而是即时通信场景中的消息可靠性：
+ReliableMessageDelivery 是一个可靠消息投递原型项目。核心后端使用 C++11 实现，重点验证即时通信场景里的消息可靠性：在线投递、离线暂存、上线补发、ACK、超时重试、幂等去重和消息状态追踪。
+
+当前项目已经新增 `web_gateway/`，用于提供浏览器聊天演示界面。浏览器不直接连接 C++ IMServer，而是先连接 Web Gateway，再由 Gateway 使用现有 TCP/Protobuf 协议连接 IMServer。
+
+## 当前架构
 
 ```text
-在线实时投递
-离线消息暂存
-用户上线补发
-发送方 ACK
-接收方 ACK
-超时重试
-幂等去重
-消息状态追踪
+Browser
+  | HTTP: GET /, POST /api/login, POST /api/register
+  | WebSocket: /ws?token=...
+  v
+Web Gateway (Node.js + TypeScript)
+  | TCP + Protobuf Envelope
+  v
+C++ IMServer
+  | Redis command
+  v
+Redis MessageStore
 ```
 
-当前版本已经将消息存储切换为 Redis 版 `MessageStore`，用 Redis 保存消息账本、投递状态、发送侧幂等索引、离线 Pending 索引和 Delivered 超时索引。它适合学习 C++ 网络编程、Muduo Reactor、Protobuf 协议设计、Redis 持久化和消息可靠投递机制。
+默认端口：
+
+```text
+Web Gateway: 127.0.0.1:3000
+IMServer:    0.0.0.0:8080
+Redis:       127.0.0.1:6379
+```
+
+第一版 Web Gateway 采用兼容现有 IMServer 的模型：
+
+```text
+1 个浏览器 WebSocket 用户
+  -> 1 个 Gateway Session
+  -> 1 条到 IMServer 的 TCP/Protobuf 连接
+```
+
+因此 IMServer 暂时不需要改造，仍然保持 `uid -> TCP connection` 的在线用户模型。
+
+## 目录结构
+
+```text
+client/          C++ 压测/演示客户端
+server/          C++ IMServer
+protocol/        Protobuf 协议和编解码辅助代码
+web_gateway/     浏览器聊天演示网关
+records/         阶段设计和开发记录
+CMakeLists.txt   C++ 工程入口
+README.md        项目说明
+```
+
+## 已实现能力
+
+C++ IMServer 已实现：
+
+- 基于 Muduo 的 TCP 长连接服务。
+- Protobuf `Envelope` 协议封装。
+- `4 字节网络序长度头 + Protobuf body` 的 TCP 帧格式。
+- 客户端登录绑定 uid。
+- 在线用户状态管理：`uid -> TcpConnectionPtr`、`conn -> uid`。
+- 在线消息实时投递。
+- 离线消息保存为 Redis Pending。
+- 用户重新登录后按 Pending 索引补发消息。
+- 发送方 ACK：服务端收到并处理 `CHAT_REQ` 后返回 ACK。
+- 接收方 ACK：客户端收到 `CHAT_PUSH` 后返回 ACK。
+- 服务端收到接收方 ACK 后将消息标记为 `Acked`。
+- `Pending`、`Delivered`、`Acked`、`Failed` 消息状态流转。
+- 客户端发送侧 `pending_acks` 和超时重试。
+- 服务端 `Delivered` 超时扫描和重投。
+- Redis 版 `MessageStore`。
+- 基于 `from_uid + client_msg_id` 的服务端持久化幂等去重。
+
+Web Gateway 已实现：
+
+- 静态前端页面托管：`GET /`。
+- 登录接口：`POST /api/login`。
+- 注册接口：`POST /api/register`。
+- WebSocket 长连接入口：`/ws?token=...`。
+- 演示版认证：账号等于密码即成功，例如 `1 / 1`。
+- 内存 token 管理。
+- WebSocket session 管理。
+- 浏览器 JSON 消息和 IMServer Protobuf 消息互转。
+- 一个 Web 用户对应一条 IMServer TCP 连接。
+- 发送消息、发送方 ACK、接收消息、接收方 ACK 的完整转发链路。
 
 ## 快速开始
 
-构建项目：
+### 1. 构建 C++ 后端
 
 ```bash
 cmake -S . -B build
 cmake --build build
 ```
 
-服务端默认连接本机 Redis：
+### 2. 启动 Redis
+
+IMServer 默认连接本机 Redis：
 
 ```text
 127.0.0.1:6379
 ```
 
-启动服务端前请先确保 Redis 正在运行。
+可以用下面命令确认 Redis 是否在监听：
 
-启动服务端：
+```bash
+ss -ltnp | grep 6379
+```
+
+### 3. 启动 IMServer
 
 ```bash
 ./bin/server
 ```
 
-服务端默认监听：
+IMServer 默认监听：
 
 ```text
 0.0.0.0:8080
 ```
 
-运行一次压测：
+### 4. 启动 Web Gateway
 
 ```bash
-./bin/client 16 1000 quiet 60
+cd web_gateway
+npm install
+npm run dev
 ```
 
-当前压测模型是多个发送方客户端向一个接收方客户端发送消息，适合快速验证登录、投递、ACK、重试和消息状态流转是否闭环。
-
-## 当前能力
-
-已实现：
-
-- 基于 Muduo 的 TCP 长连接服务。
-- Protobuf `Envelope` 协议封装。
-- `4 字节网络序长度头 + Protobuf body` 的 TCP 帧格式。
-- 客户端登录绑定 uid。
-- 服务端维护在线用户状态：
-  - `uid -> TcpConnectionPtr`
-  - `conn -> uid`
-- 在线消息实时投递。
-- 离线消息保存为 Redis `Pending`。
-- 用户重新登录后按 Pending 索引补发消息。
-- 发送方 ACK：服务端收到并处理 `CHAT_REQ` 后返回 ACK。
-- 接收方 ACK：客户端收到 `CHAT_PUSH` 后返回 ACK。
-- 服务端收到接收方 ACK 后将消息标记为 `Acked`。
-- 消息状态机：
-  - `Pending`
-  - `Delivered`
-  - `Acked`
-  - `Failed`
-- 客户端发送侧 `pending_acks` 和超时重试。
-- 服务端 `Delivered` 超时扫描和重投。
-- Redis 版 `MessageStore`：
-  - 消息 hash 账本。
-  - `from_uid + client_msg_id` 发送侧幂等索引。
-  - 接收方 Pending zset。
-  - Delivered 超时扫描 zset。
-- 基于 `from_uid + client_msg_id` 的服务端持久化幂等去重。
-- 多客户端压测入口。
-- 开发记录文档。
-
-当前未实现或未完善：
-
-- 客户端按 `msg_id` 去重。
-- `Acked / Failed` 消息清理、TTL 或归档策略。
-- 心跳超时扫描和踢下线。
-- MySQL 或其他长期归档存储。
-- Redis 在线状态共享。
-- `/metrics` 指标接口。
-- 多 worker shard 并行业务处理。
-- 生产级压测和限流策略。
-
-## 架构概览
+默认访问地址：
 
 ```text
-client
-  Client
-    connectServer()
-    sendMessage()
-    receiverLoop()
-    retryLoop()
-    pending_acks
-
-server
-  ChatServer
-    TCP 连接管理
-    半包缓存
-    Envelope 解码
-    事件入队
-
-  ServerEventDispatcher
-    业务事件队列
-    登录处理
-    聊天处理
-    ACK 处理
-    离线补发
-    超时重投
-
-  UserStateService
-    在线用户状态
-    conn -> uid
-    uid -> conn
-
-  MessageStore
-    Redis 消息账本
-    状态流转
-    幂等去重索引
-    Pending / Delivered 超时索引
+http://127.0.0.1:3000/
 ```
 
-## 协议模型
+如果需要让虚拟机外部或局域网访问 Gateway，可以改监听地址：
+
+```bash
+WEB_GATEWAY_HOST=0.0.0.0 npm run dev
+```
+
+也可以指定 IMServer 地址：
+
+```bash
+IM_HOST=127.0.0.1 IM_PORT=8080 npm run dev
+```
+
+### 5. 浏览器演示
+
+打开两个浏览器窗口，分别登录：
+
+```text
+用户 1：账号 1，密码 1
+用户 2：账号 2，密码 2
+```
+
+登录成功后进入聊天界面，在左侧选择或输入目标 uid，即可发送消息。
+
+## Web Gateway 接口
+
+### 登录
+
+```http
+POST /api/login
+Content-Type: application/json
+
+{
+  "user_id": 1,
+  "password": "1"
+}
+```
+
+成功响应：
+
+```json
+{
+  "ok": true,
+  "uid": 1,
+  "token": "..."
+}
+```
+
+### 注册
+
+```http
+POST /api/register
+Content-Type: application/json
+
+{
+  "user_id": 2,
+  "password": "2"
+}
+```
+
+成功响应：
+
+```json
+{
+  "ok": true,
+  "uid": 2
+}
+```
+
+### WebSocket
+
+连接地址：
+
+```text
+/ws?token=登录返回的 token
+```
+
+浏览器发送消息：
+
+```json
+{
+  "type": "send_message",
+  "to_uid": 2,
+  "content": "hello",
+  "client_msg_id": "1-xxx"
+}
+```
+
+Gateway 返回发送方 ACK：
+
+```json
+{
+  "type": "send_ack",
+  "ok": true,
+  "client_msg_id": "1-xxx",
+  "msg_id": 512002
+}
+```
+
+Gateway 下发聊天消息：
+
+```json
+{
+  "type": "message",
+  "msg_id": 512002,
+  "from_uid": 1,
+  "to_uid": 2,
+  "content": "hello",
+  "server_timestamp_ms": 1781692426459
+}
+```
+
+浏览器确认收到消息：
+
+```json
+{
+  "type": "message_ack",
+  "msg_id": 512002
+}
+```
+
+## IMServer 协议
 
 协议定义位于：
 
@@ -172,7 +291,7 @@ message Envelope {
 }
 ```
 
-网络传输格式：
+TCP 传输格式：
 
 ```text
 4 字节大端 body 长度 + 序列化后的 message::Envelope
@@ -183,7 +302,7 @@ message Envelope {
 ### 在线投递
 
 ```text
-发送方 Client
+发送方
   -> CHAT_REQ(from_uid, to_uid, content, client_msg_id)
 
 服务端
@@ -195,9 +314,8 @@ message Envelope {
   -> markDelivered(msg_id)
   -> 给发送方返回 ACK(msg_id)
 
-接收方 Client
+接收方
   -> 收到 CHAT_PUSH
-  -> 存入业务消息队列
   -> 返回 ACK(msg_id)
 
 服务端
@@ -231,422 +349,50 @@ message Envelope {
 Delivered 且超过 ACK 等待时间的消息
 ```
 
-如果未超过最大重试次数：
+未超过最大重试次数时会重新投递，超过最大重试次数后会标记为 `Failed`。
 
-```text
-tryDeliverMessage(msg_id, true)
-```
+## 常用验证命令
 
-如果超过最大重试次数：
-
-```text
-markFailed(msg_id)
-```
-
-客户端也维护 `pending_acks`，对发送方 ACK 超时的 `CHAT_REQ` 进行重发。
-
-## 幂等去重
-
-客户端每条业务消息会生成 `client_msg_id`：
-
-```text
-uid + timestamp_ms + local_counter
-```
-
-服务端维护 Redis 幂等索引：
-
-```text
-from_uid + client_msg_id -> msg_id
-```
-
-如果客户端因为 ACK 超时重发同一个 `CHAT_REQ`，服务端会命中已有记录：
-
-```text
-不重复创建 MessageRecord
-不重复投递 CHAT_PUSH
-直接返回原 msg_id 的 ACK
-```
-
-注意：当前服务端已实现发送侧幂等去重，但客户端还未实现 `msg_id` 去重。服务端重投和接收方 ACK 并发时，客户端仍可能收到重复 `CHAT_PUSH`，后续需要在客户端按 `msg_id` 去重。
-
-## 目录结构
-
-```text
-.
-├── CMakeLists.txt
-├── protocol
-│   ├── Message.proto
-│   ├── Codec.h
-│   ├── EnvelopeFactory.h
-│   └── EnvelopeInspector.h
-├── client
-│   ├── CMakeLists.txt
-│   ├── include/Client.h
-│   ├── src/Client.cpp
-│   └── main_client.cpp
-├── server
-│   ├── CMakeLists.txt
-│   ├── include
-│   │   ├── ChatServer.h
-│   │   ├── MessageStore.h
-│   │   ├── ServerEventDispatcher.h
-│   │   └── UserStateService.h
-│   ├── src
-│   │   ├── ChatServer.cpp
-│   │   ├── MessageStore.cpp
-│   │   ├── ServerEventDispatcher.cpp
-│   │   └── UserStateService.cpp
-│   └── main_service.cpp
-├── records
-└── record.md
-```
-
-## 环境依赖
-
-当前项目依赖：
-
-- C++11 编译器
-- CMake
-- Protobuf
-- Muduo
-- Redis Server
-- hiredis
-- pthread
-
-在 Ubuntu 环境中需要确保已安装 Protobuf、Muduo、Redis 和 hiredis 开发库。Muduo 安装方式取决于你的本地环境，项目 CMake 目前直接链接：
-
-```text
-muduo_net
-muduo_base
-protobuf
-hiredis
-pthread
-```
-
-服务端运行时默认连接：
-
-```text
-Redis 127.0.0.1:6379
-```
-
-也可以通过环境变量覆盖 Redis 地址，Docker Compose 会使用这两个变量连接 Redis 服务容器：
-
-```text
-RMD_REDIS_HOST
-RMD_REDIS_PORT
-```
-
-## 构建
+查看端口：
 
 ```bash
-cmake -S . -B build
-cmake --build build
+ss -ltnp | grep 3000
+ss -ltnp | grep 8080
+ss -ltnp | grep 6379
 ```
 
-构建产物默认输出到：
-
-```text
-bin/server
-bin/client
-```
-
-## 运行
-
-先启动或确认 Redis 正在运行：
+构建 Web Gateway：
 
 ```bash
-redis-cli PING
+cd web_gateway
+npm run build
 ```
 
-正常应返回：
-
-```text
-PONG
-```
-
-启动服务端：
-
-```bash
-./bin/server
-```
-
-运行客户端压测：
-
-```bash
-./bin/client [sender_count] [messages_per_sender] [verbose] [wait_timeout_seconds]
-```
-
-示例：
+运行 C++ 压测客户端：
 
 ```bash
 ./bin/client 16 1000 quiet 60
 ```
 
-参数说明：
-
-```text
-sender_count          发送方客户端数量
-messages_per_sender   每个发送方发送的消息数
-verbose               传 verbose 时打印逐条收发日志；其他值表示关闭详细日志
-wait_timeout_seconds  等待 ACK/PUSH 完成的最大秒数
-```
-
-当前压测模型是：
-
-```text
-多个 sender -> 一个 receiver(uid=1)
-```
-
-因此所有 `CHAT_PUSH` 会集中到单个接收方连接。
-
-## 压测输出说明
-
-示例输出：
-
-```text
-Stress summary
-  send_elapsed_seconds
-  ack_elapsed_seconds
-  push_elapsed_seconds
-  total_elapsed_seconds
-  send_ok
-  send_failed
-  receiver_login_resps
-  receiver_chat_pushes
-  sender_login_resps
-  sender_acks
-  client_write_throughput
-  server_ack_throughput
-  receiver_push_throughput
-```
-
-关键字段：
-
-```text
-send_ok
-  客户端写入 socket 成功的消息数。
-
-sender_acks
-  发送方收到服务端 ACK 的数量。
-
-receiver_chat_pushes
-  接收方收到 CHAT_PUSH 的数量。
-```
-
-理想情况下：
-
-```text
-sender_acks == total_messages
-receiver_chat_pushes == total_messages
-```
-
-但当前客户端还没有按 `msg_id` 去重，服务端重投可能导致 `receiver_chat_pushes` 大于 `total_messages`。因此现阶段该值代表收到的 PUSH 包数量，不等价于唯一业务消息数量。
-
-## 当前性能观察
-
-当前在虚拟机中，Redis 版 `MessageStore` 和单 worker 业务模型下，小规模压测可以完整闭环：
-
-```text
-./bin/client 16 200 quiet 60
-
-total_messages:        3200
-sender_acks:           3200
-receiver_chat_pushes:  3200
-```
-
-中高压力下会出现重复 PUSH，服务端 ACK 吞吐也会受到同步 Redis 热路径影响：
-
-```text
-./bin/client 10 10000 quiet 60
-
-total_messages:              100000
-sender_acks:                 100000
-receiver_chat_pushes:        143665
-server_ack_throughput:       3762.23 msg/s
-receiver_push_throughput:    7862.58 msg/s
-```
-
-主要原因：
-
-```text
-接收端尚未按 msg_id 去重
-固定超时重投在队列积压时容易产生重复投递
-服务端当前是单业务 worker
-Redis 使用同步 hiredis 调用和单连接访问
-压测模型集中到单接收方连接
-```
-
-所以当前项目更适合验证可靠投递链路，而不是作为最终性能数据。
-
-Redis 数据会跨进程保留。重复压测前如果希望使用干净数据，可以在停止服务端后清理本项目 key：
-
-```bash
-redis-cli --scan --pattern "rmd:*" | xargs -r redis-cli DEL
-```
-
-如果当前 Redis DB 只给本项目使用，也可以使用 `redis-cli FLUSHDB`。
-
-## Docker 运行
-
-项目提供了 `Dockerfile` 和 `docker-compose.yml`，默认使用 DaoCloud 镜像源拉取基础镜像和 Redis 镜像：
-
-```text
-docker.m.daocloud.io/library/debian:bookworm-slim
-docker.m.daocloud.io/library/redis:7-alpine
-```
-
-容器内 `apt-get` 默认使用 USTC Debian 镜像源安装编译依赖。Muduo 不依赖 apt 包，Dockerfile 会从 `chenshuo/muduo` 源码编译并安装到 `/usr/local`。
-
-默认启动两个容器：
-
-```text
-server  ReliableMessageDelivery 服务端，监听 8080
-redis   Redis 7，开启 AOF，数据保存到 redis-data volume，不默认暴露宿主机端口
-```
-
-构建并启动：
-
-```bash
-docker compose up --build
-```
-
-后台启动：
-
-```bash
-docker compose up --build -d
-```
-
-查看日志：
-
-```bash
-docker compose logs -f server
-```
-
-进入 Redis 容器排查数据：
-
-```bash
-docker compose exec redis redis-cli
-```
-
-服务端端口会映射到宿主机：
-
-```text
-localhost:8080
-```
-
-运行一次容器内压测：
-
-```bash
-docker compose exec server /app/bin/client 16 1000 quiet 60
-```
-
-停止服务但保留 Redis 数据：
-
-```bash
-docker compose down
-```
-
-停止服务并删除 Redis volume：
-
-```bash
-docker compose down -v
-```
-
-如果只想构建镜像，不启动服务：
-
-```bash
-docker build -t reliable-message-delivery:local .
-```
-
-如果当前机器访问 Docker Hub 超时，可以通过环境变量替换基础镜像和 Redis 镜像：
-
-```bash
-RMD_BASE_IMAGE=<你的镜像源>/library/debian:bookworm-slim \
-RMD_REDIS_IMAGE=<你的镜像源>/library/redis:7-alpine \
-docker compose up --build
-```
-
-也可以把上面两个变量写入项目根目录的 `.env` 文件，`docker compose` 会自动读取。
-
-## 开发记录
-
-开发过程记录见：
-
-```text
-record.md
-records/
-```
-
-当前重要记录：
-
-- `records/2026-05-02-protobuf-codec.md`
-- `records/2026-05-03-online-forwarding.md`
-- `records/2026-05-04-server-event-dispatcher-message-store-benchmark.md`
-- `records/2026-05-05-reliable-delivery-ack-retry-idempotency.md`
-- `records/2026-6-11-Redis MessageStore.md`
-
-## 后续计划
-
-### 生产化差距
-
-如果目标是做真实的消息后端，当前项目已经从内存账本推进到单机 Redis 持久化原型，但还不是生产级 IM 系统。后续需要优先补齐以下能力：
-
-1. 完善 Redis 持久化策略。
-   - 当前 `MessageStore` 已把消息、状态、Pending 索引、Delivered 超时索引和幂等索引写入 Redis。
-   - 后续需要补齐 TTL、归档、容量控制、数据清理和故障恢复验证。
-2. 明确并收紧 ACK 语义。
-   - 发送方 ACK 表示服务端已可靠接收。
-   - 接收方 ACK 应表示客户端已经完成幂等处理，而不只是收到网络包。
-3. 客户端按 `msg_id` 幂等消费。
-   - 服务端重投和接收方 ACK 存在正常竞态，生产环境应默认按至少一次投递设计。
-   - 重复 `CHAT_PUSH` 应只回 ACK，不重复进入业务消息队列。
-4. 补齐故障恢复能力。
-   - 服务重启后应能恢复 Pending、Delivered 未 ACK、重试次数和幂等索引。
-   - 后续再考虑多实例、主备或分片部署。
-5. 定义消息顺序模型。
-   - 至少需要明确同一发送方到同一接收方、同一会话或同一用户收件箱内的顺序保证。
-   - 离线补发顺序需要继续用测试覆盖，确保按 `created_at_ms` 或 `msg_id` 稳定补发。
-6. 提升并发和背压能力。
-   - 当前业务处理仍是单 worker，后续可按连接、uid 或会话做 shard worker。
-   - 需要 inflight 限流、慢客户端处理和重试退避，避免积压时触发重投风暴。
-7. 增加生产级保护。
-   - 认证、TLS、心跳超时踢下线、消息大小限制、指标、告警、日志采样、容量清理和长期压测。
-
-阶段目标应先聚焦“单机 Redis 可靠”：恢复、幂等、顺序、清理和可观测性稳定后，再推进多实例扩展。
-
-### 功能计划
-
-优先级较高：
-
-1. 客户端按 `msg_id` 去重。
-2. `Acked / Failed` 消息清理、TTL 或归档，避免 Redis 数据持续增长。
-3. 调整重试策略，避免压测时重投风暴。
-4. 增加 inflight 限流。
-5. 降级或关闭服务端逐条日志。
-6. 给超时扫描增加批量上限，避免一次扫描阻塞 Redis 热路径。
-
-中长期：
-
-1. 按需接入 MySQL 或其他长期归档存储。
-2. 使用 Redis 维护多实例共享在线状态。
-3. 增加 `/metrics` 指标接口。
-4. 心跳超时扫描。
-5. 多 worker shard 队列提升多核利用率。
-
-## 项目定位
-
-当前项目是一个 Redis 持久化版可靠消息投递服务原型，重点展示：
-
-```text
-网络编程
-Protobuf 协议
-并发队列
-ACK 确认
-幂等去重
-Redis 消息账本
-离线补偿
-超时重试
-状态机设计
-```
-
-它不是完整生产级 IM 系统。生产化还需要指标、限流、清理策略、故障恢复验证、更多测试和多实例扩展。
+## 当前限制
+
+- Web Gateway 认证仍是演示版，账号等于密码。
+- 用户、token 都保存在 Gateway 内存中，服务重启会丢失。
+- 当前没有数据库用户表。
+- 当前没有浏览器历史消息查询接口。
+- Gateway 到 IMServer 还没有断线自动重连和退避策略。
+- 当前是一个 Web 用户对应一条 IMServer TCP 连接，还没有做 Gateway 到 IMServer 的多路复用。
+- 多 Gateway 部署时还没有用户路由表。
+- 还没有 TLS、反向代理、限流、生产级日志和 `/metrics`。
+
+## 后续方向
+
+优先建议：
+
+1. 补齐 WebSocket 心跳、断线重连和前端连接状态提示。
+2. 增加消息发送中、已确认、失败等 UI 状态。
+3. 增加历史消息查询接口。
+4. 将 `AuthService` 从内存演示版替换为数据库用户表。
+5. 增加 Gateway 联调测试。
+
+等浏览器演示链路稳定后，再考虑是否改造 IMServer 的连接模型，从 `uid -> TCP connection` 演进为 `uid -> gateway route`，或设计 Gateway 到 IMServer 的内部多路复用协议。
