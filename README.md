@@ -509,3 +509,23 @@ npm run build
 5. 增加 Gateway 联调测试。
 
 等浏览器演示链路稳定后，再考虑是否改造 IMServer 的连接模型，从 `uid -> TCP connection` 演进为 `uid -> gateway route`，或设计 Gateway 到 IMServer 的内部多路复用协议。
+
+## Docker 打包部署
+
+当前 Docker 编排包含三个运行镜像：
+
+- `docker.m.daocloud.io/library/redis:7-alpine`：Redis 消息存储。
+- `rmd-server:local`：C++ IMServer，监听 `8080`。
+- `rmd-web-gateway:local`：Web Gateway，监听 `3000`。
+
+构建并启动：
+
+```bash
+docker compose up -d --build
+```
+
+启动后浏览器访问：
+
+```text
+http://127.0.0.1:3000/
+```

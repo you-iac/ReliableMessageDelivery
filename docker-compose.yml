@@ -13,7 +13,7 @@ services:
   server:
     build:
       context: .
-    image: reliable-message-delivery:local
+    image: rmd-server:local
     depends_on:
       redis:
         condition: service_healthy
@@ -22,6 +22,23 @@ services:
       RMD_REDIS_PORT: "6379"
     ports:
       - "8080:8080"
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: web_gateway/Dockerfile
+    image: rmd-web-gateway:local
+    depends_on:
+      server:
+        condition: service_started
+    environment:
+      WEB_GATEWAY_HOST: 0.0.0.0
+      WEB_GATEWAY_PORT: "3000"
+      IM_HOST: server
+      IM_PORT: "8080"
+    ports:
+      - "3000:3000"
     restart: unless-stopped
 
 volumes:
