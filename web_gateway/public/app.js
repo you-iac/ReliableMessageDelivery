@@ -9,6 +9,9 @@ const state = {
   pendingByClientMsgId: new Map(),
 };
 
+const MESSAGE_PAGE_SIZE = 100;
+const LOAD_OLDER_THRESHOLD_PX = 24;
+
 const els = {
   authView: document.querySelector('#auth-view'),
   chatView: document.querySelector('#chat-view'),
@@ -87,6 +90,7 @@ els.clearButton.addEventListener('click', () => {
   }
   conversation.messages = [];
   conversation.unread = 0;
+  conversation.visibleMessageCount = 0;
   renderMessages();
   renderConversationList();
 });
@@ -95,6 +99,12 @@ els.messageInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     sendMessage();
+  }
+});
+
+els.messageList.addEventListener('scroll', () => {
+  if (els.messageList.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
+    loadOlderMessages();
   }
 });
 
@@ -299,6 +309,7 @@ function sendMessage() {
   conversation.messages.push(localMessage);
   conversation.lastMessage = content;
   conversation.lastAtMs = localMessage.created_at_ms;
+  resetVisibleMessageWindow(conversation);
   state.pendingByClientMsgId.set(clientMsgId, { peerUid: conversation.peerUid, message: localMessage });
   renderConversationList();
   renderMessages();
@@ -321,12 +332,13 @@ function applySendAck(msg) {
     return;
   }
 
+  const shouldScrollToBottom = pending.peerUid === state.activePeerUid && isMessageListNearBottom();
   pending.message.msg_id = msg.msg_id || null;
   pending.message.status = msg.ok ? 'sent' : 'failed';
   pending.message.reason = msg.reason || '';
   state.pendingByClientMsgId.delete(msg.client_msg_id);
   renderConversationList();
-  renderMessages();
+  renderMessages({ scrollMode: shouldScrollToBottom ? 'bottom' : 'preserve' });
 }
 
 function appendIncomingMessage(msg) {
@@ -334,6 +346,8 @@ function appendIncomingMessage(msg) {
   const toUid = Number(msg.to_uid || state.uid);
   const peerUid = fromUid === state.uid ? toUid : fromUid;
   const conversation = addConversation(peerUid);
+  const isActiveConversation = state.activePeerUid === peerUid;
+  const shouldScrollToBottom = isActiveConversation && isMessageListNearBottom();
 
   conversation.messages.push({
     direction: fromUid === state.uid ? 'outgoing' : 'incoming',
@@ -346,13 +360,14 @@ function appendIncomingMessage(msg) {
   });
   conversation.lastMessage = msg.content || '';
   conversation.lastAtMs = Number(msg.server_timestamp_ms || Date.now());
+  updateVisibleWindowAfterAppend(conversation, isActiveConversation && !shouldScrollToBottom);
 
   if (state.activePeerUid !== peerUid) {
     conversation.unread += 1;
   }
 
   renderConversationList();
-  renderMessages();
+  renderMessages({ scrollMode: shouldScrollToBottom ? 'bottom' : 'preserve' });
 }
 
 function sendMessageAck(msgId) {
@@ -375,6 +390,7 @@ function addConversation(peerUid) {
       unread: 0,
       lastMessage: '新会话',
       lastAtMs: Date.now(),
+      visibleMessageCount: 0,
     };
     state.conversations.set(peerUid, conversation);
   }
@@ -385,6 +401,7 @@ function selectConversation(peerUid) {
   const conversation = addConversation(peerUid);
   state.activePeerUid = peerUid;
   conversation.unread = 0;
+  resetVisibleMessageWindow(conversation);
   renderConversationList();
   renderMessages();
   updateHeader();
@@ -412,6 +429,9 @@ function addSystemMessageToActive(content) {
 
 function addSystemMessageToConversation(peerUid, content) {
   const conversation = addConversation(peerUid);
+  const isActiveConversation = state.activePeerUid === peerUid;
+  const shouldScrollToBottom = isActiveConversation && isMessageListNearBottom();
+
   conversation.messages.push({
     direction: 'system',
     content,
@@ -420,8 +440,9 @@ function addSystemMessageToConversation(peerUid, content) {
   });
   conversation.lastMessage = content;
   conversation.lastAtMs = Date.now();
+  updateVisibleWindowAfterAppend(conversation, isActiveConversation && !shouldScrollToBottom);
   renderConversationList();
-  renderMessages();
+  renderMessages({ scrollMode: shouldScrollToBottom ? 'bottom' : 'preserve' });
 }
 
 function renderConversationList() {
@@ -460,8 +481,66 @@ function renderConversationList() {
   }
 }
 
-function renderMessages() {
+function loadOlderMessages() {
   const conversation = getActiveConversation();
+  if (!conversation || conversation.peerUid === 0 || els.messageList.hidden) {
+    return;
+  }
+
+  const visibleCount = getVisibleMessageCount(conversation);
+  if (visibleCount >= conversation.messages.length) {
+    return;
+  }
+
+  const previousScrollHeight = els.messageList.scrollHeight;
+  const previousScrollTop = els.messageList.scrollTop;
+  conversation.visibleMessageCount = Math.min(conversation.messages.length, visibleCount + MESSAGE_PAGE_SIZE);
+  renderMessages({
+    scrollMode: 'preserve-prepend',
+    previousScrollHeight,
+    previousScrollTop,
+  });
+}
+
+function resetVisibleMessageWindow(conversation) {
+  conversation.visibleMessageCount = Math.min(conversation.messages.length, MESSAGE_PAGE_SIZE);
+}
+
+function updateVisibleWindowAfterAppend(conversation, keepTopMessageVisible) {
+  const visibleCount = getVisibleMessageCount(conversation);
+  if (keepTopMessageVisible) {
+    conversation.visibleMessageCount = Math.min(conversation.messages.length, visibleCount + 1);
+    return;
+  }
+  if (visibleCount === 0) {
+    resetVisibleMessageWindow(conversation);
+  }
+}
+
+function getVisibleMessageCount(conversation) {
+  if (Number.isInteger(conversation.visibleMessageCount)) {
+    return Math.min(conversation.messages.length, Math.max(0, conversation.visibleMessageCount));
+  }
+  return Math.min(conversation.messages.length, MESSAGE_PAGE_SIZE);
+}
+
+function getVisibleMessages(conversation) {
+  const visibleCount = getVisibleMessageCount(conversation);
+  const startIndex = Math.max(0, conversation.messages.length - visibleCount);
+  return conversation.messages.slice(startIndex);
+}
+
+function isMessageListNearBottom() {
+  if (els.messageList.hidden) {
+    return true;
+  }
+  return els.messageList.scrollHeight - els.messageList.scrollTop - els.messageList.clientHeight <= 32;
+}
+
+function renderMessages(options = {}) {
+  const conversation = getActiveConversation();
+  const previousScrollHeight = options.previousScrollHeight ?? els.messageList.scrollHeight;
+  const previousScrollTop = options.previousScrollTop ?? els.messageList.scrollTop;
   els.messageList.replaceChildren();
 
   if (!conversation || conversation.peerUid === 0) {
@@ -477,7 +556,7 @@ function renderMessages() {
   els.emptyChat.hidden = conversation.messages.length > 0;
   els.messageList.hidden = false;
 
-  for (const message of conversation.messages) {
+  for (const message of getVisibleMessages(conversation)) {
     const node = els.messageTemplate.content.firstElementChild.cloneNode(true);
     node.classList.add(message.direction);
 
@@ -494,7 +573,14 @@ function renderMessages() {
 
   setComposerEnabled(state.connected);
   updateHeader();
-  els.messageList.scrollTop = els.messageList.scrollHeight;
+
+  if (options.scrollMode === 'preserve-prepend') {
+    els.messageList.scrollTop = els.messageList.scrollHeight - previousScrollHeight + previousScrollTop;
+  } else if (options.scrollMode === 'preserve') {
+    els.messageList.scrollTop = previousScrollTop;
+  } else {
+    els.messageList.scrollTop = els.messageList.scrollHeight;
+  }
 }
 
 function buildMessageMeta(message) {

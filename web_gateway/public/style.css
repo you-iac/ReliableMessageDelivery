@@ -74,7 +74,8 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(71, 119, 230, 0.16);
 }
 
-.hidden {
+.hidden,
+[hidden] {
   display: none !important;
 }
 
@@ -197,7 +198,10 @@ textarea:focus {
 .chat-view {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   background: #d7e7cc;
 }
 
@@ -205,6 +209,8 @@ textarea:focus {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.96);
 }
@@ -394,16 +400,26 @@ textarea:focus {
 
 .chat-main {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
-  min-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   background:
     linear-gradient(rgba(215, 231, 204, 0.88), rgba(215, 231, 204, 0.88)),
     repeating-linear-gradient(45deg, transparent 0 22px, rgba(95, 130, 84, 0.08) 22px 24px);
 }
 
+.chat-main > .chat-header {
+  grid-column: 1;
+  grid-row: 1;
+}
+
 .empty-chat {
   display: grid;
+  grid-column: 1;
+  grid-row: 2;
+  min-height: 0;
   place-content: center;
   padding: 28px;
   color: var(--muted);
@@ -422,6 +438,8 @@ textarea:focus {
 
 .message-list {
   display: flex;
+  grid-column: 1;
+  grid-row: 2;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
@@ -479,6 +497,8 @@ textarea:focus {
 
 .composer {
   display: grid;
+  grid-column: 1;
+  grid-row: 3;
   grid-template-columns: minmax(0, 1fr) 92px;
   gap: 12px;
   padding: 14px 18px;
@@ -523,16 +543,17 @@ textarea:focus {
 
   .chat-view {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 42vh) minmax(0, 1fr);
   }
 
   .conversation-sidebar {
-    max-height: 42vh;
+    max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
 
   .chat-main {
-    min-height: 58vh;
+    min-height: 0;
   }
 
   .message-list {
