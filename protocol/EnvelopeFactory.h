@@ -74,7 +74,8 @@ public:
                                             uint64_t msg_id,
                                             uint64_t from_uid,
                                             uint64_t to_uid,
-                                            const std::string& content) {
+                                            const std::string& content,
+                                            uint64_t server_timestamp_ms = 0) {
         message::Envelope envelope;
         envelope.set_type(message::CHAT_PUSH);
         envelope.set_seq(seq);
@@ -85,7 +86,8 @@ public:
         push->set_from_uid(from_uid);
         push->set_to_uid(to_uid);
         push->set_content(content);
-        push->set_server_timestamp_ms(NowMs());
+        push->set_server_timestamp_ms(
+            server_timestamp_ms == 0 ? NowMs() : server_timestamp_ms);
 
         return envelope;
     }

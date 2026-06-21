@@ -337,7 +337,8 @@ bool ServerEventDispatcher::tryDeliverMessage(const MessageRecord& record) {
         record.msg_id,
         record.from_uid,
         record.to_uid,
-        record.content);
+        record.content,
+        record.created_at_ms);
 
     sendEnvelope(target, push);
     message_store_.markDelivered(record.msg_id);
@@ -364,7 +365,8 @@ bool ServerEventDispatcher::retryDeliverMessage(const MessageRecord& record) {
         record.msg_id,
         record.from_uid,
         record.to_uid,
-        record.content);
+        record.content,
+        record.created_at_ms);
 
     sendEnvelope(target, push);
     message_store_.markDelivered(record.msg_id);
