@@ -502,11 +502,17 @@ npm run build
 
 优先建议：
 
-1. 补齐 WebSocket 心跳、断线重连和前端连接状态提示。
-2. 增加消息发送中、已确认、失败等 UI 状态。
-3. 增加历史消息查询接口。
-4. 将 `AuthService` 从内存演示版替换为数据库用户表。
-5. 增加 Gateway 联调测试。
+1. 补齐消息状态机前置条件校验，避免 ACK/Failed 等终态被重投或慢路径覆盖。
+2. 补齐 C++ 客户端和浏览器前端基于 `msg_id` 的接收去重，保证 at-least-once 重投不会重复展示。
+3. 增加覆盖发送、离线补发、ACK、重试、幂等和 Gateway 转发链路的集成测试。
+4. 增加 `/metrics` 或等价指标输出，观测投递成功率、ACK 延迟、重试次数、Pending 积压和 Redis 耗时。
+5. 优化 Redis 访问模型，引入连接池、pipeline 或批量 Lua，降低单同步连接和逐条操作带来的吞吐瓶颈。
+6. 设计 Gateway 到 IMServer 的断线重连、退避策略和多路复用模型，逐步从 `uid -> TCP connection` 演进到 `uid -> gateway route`。
+7. 补齐 WebSocket 心跳、断线重连和前端连接状态提示。
+8. 增加消息发送中、已确认、失败等 UI 状态。
+9. 增加历史消息查询接口。
+10. 将 `AuthService` 从内存演示版替换为数据库用户表。
+11. 增加 Gateway 联调测试。
 
 等浏览器演示链路稳定后，再考虑是否改造 IMServer 的连接模型，从 `uid -> TCP connection` 演进为 `uid -> gateway route`，或设计 Gateway 到 IMServer 的内部多路复用协议。
 
