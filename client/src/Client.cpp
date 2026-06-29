@@ -379,12 +379,14 @@ void Client::handleChatPush(const message::Envelope& envelope) {
     ++chat_push_count;
     pushMessage(envelope);
 
-    // 收到服务端推送后回 ACK，表示接收方已经消费到该 msg_id。
-    sendEnvelope(EnvelopeFactory::CreateAck(
-        envelope.seq(),
-        envelope.chat_push().msg_id(),
-        true,
-        ""));
+    // 历史回放只用于登录展示，不参与可靠投递 ACK 状态流转。
+    if (!envelope.chat_push().history()) {
+        sendEnvelope(EnvelopeFactory::CreateAck(
+            envelope.seq(),
+            envelope.chat_push().msg_id(),
+            true,
+            ""));
+    }
 }
 
 void Client::handleLoginResponse(const message::Envelope& envelope) {

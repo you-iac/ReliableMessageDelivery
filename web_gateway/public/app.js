@@ -262,7 +262,9 @@ function handleServerMessage(raw) {
 
   if (msg.type === 'message') {
     appendIncomingMessage(msg);
-    sendMessageAck(msg.msg_id);
+    if (!msg.history) {
+      sendMessageAck(msg.msg_id);
+    }
     return;
   }
 
@@ -355,14 +357,14 @@ function appendIncomingMessage(msg) {
     from_uid: fromUid,
     to_uid: toUid,
     content: msg.content || '',
-    status: 'received',
+    status: msg.history ? 'history' : 'received',
     created_at_ms: Number(msg.server_timestamp_ms || Date.now()),
   });
   conversation.lastMessage = msg.content || '';
   conversation.lastAtMs = Number(msg.server_timestamp_ms || Date.now());
   updateVisibleWindowAfterAppend(conversation, isActiveConversation && !shouldScrollToBottom);
 
-  if (state.activePeerUid !== peerUid) {
+  if (state.activePeerUid !== peerUid && !msg.history) {
     conversation.unread += 1;
   }
 
@@ -609,6 +611,9 @@ function buildMessageStatus(message) {
   }
   if (message.status === 'received') {
     return message.msg_id ? `已 ACK #${message.msg_id}` : '已 ACK';
+  }
+  if (message.status === 'history') {
+    return message.msg_id ? `历史消息 #${message.msg_id}` : '历史消息';
   }
   return '';
 }

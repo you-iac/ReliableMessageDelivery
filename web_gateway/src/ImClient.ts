@@ -26,6 +26,7 @@ export type ImChatPushEvent = {
   toUid: number;
   content: string;
   serverTimestampMs: number;
+  history: boolean;
 };
 
 export type ImClientHandlers = {
@@ -179,7 +180,10 @@ export class ImClient {
     const push = envelope.chatPush || {};
     const msgId = toNumber(push.msgId);
     const seq = toNumber(envelope.seq);
-    this.pushSeqByMsgId.set(msgId, seq);
+    const history = push.history === true;
+    if (!history) {
+      this.pushSeqByMsgId.set(msgId, seq);
+    }
 
     this.handlers.onChatPush({
       msgId,
@@ -188,6 +192,7 @@ export class ImClient {
       toUid: toNumber(push.toUid),
       content: String(push.content || ""),
       serverTimestampMs: toNumber(push.serverTimestampMs) || Date.now(),
+      history,
     });
   }
 

@@ -1,6 +1,7 @@
 #ifndef MESSAGE_STORE_H
 #define MESSAGE_STORE_H
 
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -52,7 +53,7 @@ struct CreateMessageResult {
 };
 
 // MessageStore 是 Redis 版消息存储。
-// 它负责消息账本、发送侧幂等索引、Pending 索引和 Delivered 超时索引。
+// 它负责消息账本、发送侧幂等索引、Pending 索引、最近消息索引和 Delivered 超时索引。
 class MessageStore {
 public:
     MessageStore();
@@ -89,6 +90,10 @@ public:
 
     // 查询指定用户当前等待投递的消息。
     std::vector<MessageRecord> getPendingMessages(uint64_t to_uid);
+
+    // 查询指定用户最近的消息，结果按创建时间从旧到新返回。
+    std::vector<MessageRecord> getRecentMessages(uint64_t uid,
+                                                 std::size_t limit);
 
     // 查询 Delivered 但超过指定 ACK 等待时间的消息。
     std::vector<MessageRecord> getTimeoutDeliveredMessages(

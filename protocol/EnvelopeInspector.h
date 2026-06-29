@@ -47,6 +47,7 @@ class EnvelopeInspector {
                     << ", to_uid=" << envelope.chat_push().to_uid()
                     << ", content=\"" << envelope.chat_push().content()
                     << "\", server_timestamp_ms=" << envelope.chat_push().server_timestamp_ms()
+                    << ", history=" << (envelope.chat_push().history() ? "true" : "false")
                     << "}";
                 break;
             case message::Envelope::kAck:

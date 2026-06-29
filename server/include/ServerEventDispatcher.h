@@ -4,6 +4,7 @@
 
 #include <condition_variable>
 #include <atomic>
+#include <cstddef>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -80,7 +81,9 @@ private:
     void handleHeartbeat(const ServerEvent& event);// 处理心跳消息。后续会更新连接活跃时间，并定期清理长时间未心跳的连接。
     void handleConnectionClosed(const ServerEvent& event);// 处理连接断开事件。后续会清理用户在线状态。
     
-    void deliverPendingMessages(uint64_t uid);// 用户上线后补发该用户的 Pending 消息。
+    void deliverLoginMessages(uint64_t uid);// 用户上线后优先补发 Pending；没有 Pending 时回放最近消息。
+    bool deliverPendingMessages(uint64_t uid);// 用户上线后补发该用户的 Pending 消息。
+    void sendRecentMessages(uint64_t uid, std::size_t limit);// 给登录用户发送最近消息，不改变消息投递状态。
     bool tryDeliverMessage(const MessageRecord& record);// 普通投递，目标离线时保持 Pending。
     bool retryDeliverMessage(const MessageRecord& record);// 重试投递，发送前递增重试次数。
     void sendEnvelope(const muduo::net::TcpConnectionPtr& conn,

@@ -92,6 +92,9 @@ message ChatPush {
 
   // 服务端创建或推送消息时的毫秒级时间戳。
   uint64 server_timestamp_ms = 5;
+
+  // true 表示这是登录后的历史消息回放，客户端只展示，不作为可靠投递 ACK。
+  bool history = 6;
 }
 
 // Ack 是通用确认包。

@@ -13,6 +13,7 @@ namespace {
 const uint64_t kAckTimeoutMs = 10000;
 const int kDeliveryScanIntervalMs = 1000;
 const int kMaxDeliveryRetryCount = 3;
+const std::size_t kLoginRecentMessageLimit = 100;
 //获取当前时间
 uint64_t NowMs() {
     using namespace std::chrono;
@@ -185,7 +186,7 @@ void ServerEventDispatcher::handleLogin(const ServerEvent& event) {
 
     if (ok) {
         LOG_INFO << "User online: uid=" << event.envelope.login_req().uid();
-        deliverPendingMessages(event.envelope.login_req().uid());
+        deliverLoginMessages(event.envelope.login_req().uid());
     }
 }
 
@@ -310,12 +311,44 @@ void ServerEventDispatcher::deliveryLoop() {
     }
 }
 
-void ServerEventDispatcher::deliverPendingMessages(uint64_t uid) {
+void ServerEventDispatcher::deliverLoginMessages(uint64_t uid) {
+    if (deliverPendingMessages(uid)) {
+        return;
+    }
+
+    sendRecentMessages(uid, kLoginRecentMessageLimit);
+}
+
+bool ServerEventDispatcher::deliverPendingMessages(uint64_t uid) {
     std::vector<MessageRecord> pending_records =
         message_store_.getPendingMessages(uid);
-    LOG_INFO << "tryDeliverMessage " << "size:" <<  pending_records.size();
+    LOG_INFO << "deliverPendingMessages size:" << pending_records.size();
     for (const MessageRecord& record : pending_records) {
         tryDeliverMessage(record);
+    }
+    return !pending_records.empty();
+}
+
+void ServerEventDispatcher::sendRecentMessages(uint64_t uid, std::size_t limit) {
+    std::vector<MessageRecord> recent_records =
+        message_store_.getRecentMessages(uid, limit);
+    LOG_INFO << "sendRecentMessages size:" << recent_records.size();
+
+    muduo::net::TcpConnectionPtr target = user_state_.getConnByUid(uid);
+    if (!target || !target->connected()) {
+        return;
+    }
+
+    for (const MessageRecord& record : recent_records) {
+        message::Envelope push = EnvelopeFactory::CreateChatPush(
+            record.msg_id,
+            record.msg_id,
+            record.from_uid,
+            record.to_uid,
+            record.content,
+            record.created_at_ms,
+            true);
+        sendEnvelope(target, push);
     }
 }
 

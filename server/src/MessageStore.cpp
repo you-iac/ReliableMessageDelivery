@@ -1,5 +1,6 @@
 #include "MessageStore.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -34,6 +35,11 @@ std::string MakeMessageKey(uint64_t msg_id) {
 // 构造接收方 Pending 有序集合的 Redis key。
 std::string MakePendingKey(uint64_t uid) {
     return "rmd:pending:" + std::to_string(uid);
+}
+
+// 构造用户最近消息有序集合的 Redis key。
+std::string MakeRecentKey(uint64_t uid) {
+    return "rmd:recent:" + std::to_string(uid);
 }
 
 // 幂等 key 加上固定前缀，避免和其他 Redis 数据结构冲突。
@@ -80,6 +86,8 @@ redis.call('HSET', msg_key,
     'acked_at_ms', '0',
     'retry_count', '0')
 redis.call('ZADD', KEYS[3], ARGV[6], msg_id)
+redis.call('ZADD', KEYS[4], ARGV[6], msg_id)
+redis.call('ZADD', KEYS[5], ARGV[6], msg_id)
 
 return {'1', tostring(msg_id), ARGV[2], ARGV[3], ARGV[4], ARGV[5],
         'Pending', ARGV[6], '0', '0', '0'}
@@ -354,6 +362,8 @@ bool ReplyIsTrue(const redisReply* reply) {
 RedisReplyPtr EvalCreateMessage(redisContext* context,
                                 const std::string& idem_key,
                                 const std::string& pending_key,
+                                const std::string& from_recent_key,
+                                const std::string& to_recent_key,
                                 uint64_t from_uid,
                                 uint64_t to_uid,
                                 const std::string& content,
@@ -361,7 +371,7 @@ RedisReplyPtr EvalCreateMessage(redisContext* context,
                                 uint64_t created_at_ms) {
     return RedisReplyPtr(static_cast<redisReply*>(redisCommand(
         context,
-        "EVAL %b 3 %b %b %b %b %llu %llu %b %b %llu",
+        "EVAL %b 5 %b %b %b %b %b %b %llu %llu %b %b %llu",
         kCreateMessageScript,
         sizeof(kCreateMessageScript) - 1,
         idem_key.data(),
@@ -370,6 +380,10 @@ RedisReplyPtr EvalCreateMessage(redisContext* context,
         sizeof(kRedisMsgNextIdKey) - 1,
         pending_key.data(),
         pending_key.size(),
+        from_recent_key.data(),
+        from_recent_key.size(),
+        to_recent_key.data(),
+        to_recent_key.size(),
         kRedisMsgKeyPrefix,
         sizeof(kRedisMsgKeyPrefix) - 1,
         static_cast<unsigned long long>(from_uid),
@@ -475,9 +489,13 @@ CreateMessageResult MessageStore::createMessage(
     // 幂等 key 和接收方 Pending 索引 key 由业务字段稳定生成。
     std::string idem_key = MakeIdempotencyKey(from_uid, client_msg_id);
     std::string pending_key = MakePendingKey(to_uid);
+    std::string from_recent_key = MakeRecentKey(from_uid);
+    std::string to_recent_key = MakeRecentKey(to_uid);
     RedisReplyPtr reply = EvalCreateMessage(redis_,
                                             idem_key,
                                             pending_key,
+                                            from_recent_key,
+                                            to_recent_key,
                                             from_uid,
                                             to_uid,
                                             content,
@@ -698,6 +716,64 @@ std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
                  << ", first_bad_msg_id=" << first_bad_msg_id;
     }
 
+    return result;
+}
+
+// 查询用户最近消息。索引按创建时间倒序读取，返回前再反转为展示友好的旧到新顺序。
+std::vector<MessageRecord> MessageStore::getRecentMessages(uint64_t uid,
+                                                           std::size_t limit) {
+    std::vector<MessageRecord> result;
+    if (uid == 0 || limit == 0) {
+        return result;
+    }
+
+    std::lock_guard<std::mutex> lock(redis_mutex_);
+    if (!ensureConnectedLocked()) {
+        LOG_INFO << "getRecentMessages failed: redis unavailable, uid="
+                 << uid;
+        return result;
+    }
+
+    std::string recent_key = MakeRecentKey(uid);
+    RedisReplyPtr reply(static_cast<redisReply*>(redisCommand(
+        redis_,
+        "ZREVRANGE %b 0 %llu",
+        recent_key.data(),
+        recent_key.size(),
+        static_cast<unsigned long long>(limit - 1))));
+
+    if (IsConnectionBroken(redis_, reply.get())) {
+        LOG_INFO << "getRecentMessages failed: ZREVRANGE recent key failed, key="
+                 << recent_key
+                 << ", redis_err="
+                 << (redis_ != nullptr ? redis_->errstr : "null redis context");
+        closeConnectionLocked();
+        return result;
+    }
+    if (reply->type != REDIS_REPLY_ARRAY) {
+        LOG_INFO << "getRecentMessages failed: unexpected ZREVRANGE reply type, key="
+                 << recent_key << ", reply_type=" << reply->type;
+        return result;
+    }
+
+    for (std::size_t i = 0; i < reply->elements; ++i) {
+        uint64_t msg_id = 0;
+        MessageRecord record;
+        if (!ParseUint64(reply->element[i], &msg_id) ||
+            !FetchRecord(redis_, msg_id, &record)) {
+            if (redis_ != nullptr && redis_->err != 0) {
+                closeConnectionLocked();
+                break;
+            }
+            continue;
+        }
+
+        if (record.from_uid == uid || record.to_uid == uid) {
+            result.push_back(record);
+        }
+    }
+
+    std::reverse(result.begin(), result.end());
     return result;
 }
 

@@ -193,6 +193,7 @@ export class GatewayWebSocketServer {
       to_uid: event.toUid,
       content: event.content,
       server_timestamp_ms: event.serverTimestampMs,
+      history: event.history,
     });
   }
 
