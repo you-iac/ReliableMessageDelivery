@@ -94,8 +94,15 @@ inline bool ShardedThreadPool::submit(uintptr_t key, Task task){
     if (stopped_ || workers_.empty()) {
         return false;
     }
+    // 指针类 key 通常低位为 0，直接取模会让任务集中到 worker 0。
+    key ^= key >> 33;
+    key *= 0xff51afd7ed558ccdULL;
+    key ^= key >> 33;
+    key *= 0xc4ceb9fe1a85ec53ULL;
+    key ^= key >> 33;
+
     //获取工作分片
-    Worker*  w = workers_[key%this->workers_.size()].get();
+    Worker*  w = workers_[key % this->workers_.size()].get();
     
     {
 
