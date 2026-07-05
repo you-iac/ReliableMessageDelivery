@@ -24,10 +24,12 @@ public:
     void stop();
     //提交一个任务到线程池中，key用于选择线程
     bool submit(uintptr_t key, Task task);
+    // 获取线程池每个线程的待处理任务数，不包含正在执行的任务。
+    std::vector<std::size_t> getQueueSizes() const;
 
 private:
     struct Worker {
-        std::mutex mutex;
+        mutable std::mutex mutex;
         std::condition_variable cv;
         std::queue<Task> tasks;
         std::thread thread;
@@ -106,6 +108,18 @@ inline bool ShardedThreadPool::submit(uintptr_t key, Task task){
 
     w->cv.notify_one();
     return true;
+}
+
+inline std::vector<std::size_t> ShardedThreadPool::getQueueSizes() const{
+    std::vector<std::size_t> sizes;
+    sizes.reserve(workers_.size());
+
+    for (const auto& worker : workers_) {
+        std::lock_guard<std::mutex> lock(worker->mutex);
+        sizes.push_back(worker->tasks.size());
+    }
+
+    return sizes;
 }
 
 inline void ShardedThreadPool::stop(){
