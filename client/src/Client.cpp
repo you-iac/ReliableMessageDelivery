@@ -10,7 +10,7 @@
 
 namespace {
 
-const uint64_t kBaseRetryTimeoutMs = 2000;
+const uint64_t kBaseRetryTimeoutMs = 30000;
 const int kMaxRetryCount = 5;//<最大重传次数
 const int kRetryScanIntervalMs = 1000;
 
