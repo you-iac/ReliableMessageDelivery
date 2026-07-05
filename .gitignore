@@ -30,3 +30,4 @@ cmake-build-debug
 .cache
 cmake-build-debug
 bench
+*.log
