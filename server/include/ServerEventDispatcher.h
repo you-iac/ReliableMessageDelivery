@@ -2,16 +2,15 @@
 #ifndef SERVER_EVENT_DISPATCHER_H
 #define SERVER_EVENT_DISPATCHER_H
 
-#include <condition_variable>
 #include <atomic>
 #include <cstddef>
 #include <mutex>
-#include <queue>
 #include <thread>
 
 #include "Message.pb.h"
 #include "MessageStore.h"
 #include "UserStateService.h"
+#include "ShardedThreadPool.h"
 
 #include <muduo/net/TcpConnection.h>
 
@@ -22,19 +21,19 @@
 // ConnectionClosed、HeartbeatTimeout 等非 Envelope 事件，让 ChatServer 保持网络层职责。
 //
 // ServerEventDispatcher 负责：
-//   1. 维护线程安全的待处理队列。
-//   2. 在 worker 线程中按顺序取出请求。
+//   1. 接收 ChatServer 投递过来的业务事件。
+//   2. 按连接分片提交到业务线程池。
 //   3. 根据 Envelope.type() 分发到登录、聊天、ACK 等业务处理函数。
 class ServerEventDispatcher {
 public:
     ServerEventDispatcher();
     ~ServerEventDispatcher();
 
-    // 启动后台 worker 线程。重复调用是安全的。
+    // 启动后台业务线程池。重复调用是安全的。
     void start();   
 
-    // 停止后台 worker 线程。
-    // stop() 会唤醒 worker，并等待已经入队的任务处理完成后退出。
+    // 停止后台业务线程池。
+    // stop() 会阻止新任务入队，并等待已经提交的任务处理完成后退出。
     // 重复调用是安全的。
     void stop();
 
@@ -55,7 +54,7 @@ private:
     //
     // Envelope 表示来自客户端的 protobuf 消息。
     // ConnectionClosed 表示 TCP 连接已断开。
-    // 两类事件共用一个队列，保证同一条连接上的登录、消息、断开按入队顺序处理。
+    // 两类事件按连接分片提交到线程池，尽量保持同一连接上的事件顺序。
     struct ServerEvent {
         enum class Type {
             Envelope,
@@ -67,11 +66,6 @@ private:
         message::Envelope envelope;
     };
 
-    // 所有从 ChatServer 投递过来的待处理请求。
-    // 该队列只允许在 mutex_ 保护下访问。
-    std::queue<ServerEvent> inbox_;
-    
-    void workerLoop();// worker 主循环：等待队列非空，取出请求，然后在锁外处理业务。
     void deliveryLoop();// 后台投递循环：扫描 Delivered 超时消息并重投。
     
     void handle     (const ServerEvent& event);// 统一业务分发入口，根据事件类型或 Envelope.type() 调用具体处理函数。
@@ -93,11 +87,10 @@ private:
                       const std::string& reason);
 
     
-    std::mutex mutex_;// 保护 inbox_、stopped_ 和 worker 生命周期状态。
-    std::condition_variable not_empty_;// 当队列为空时 worker 阻塞等待；入队接口或 stop() 会唤醒它。
+    std::mutex mutex_;// 保护 stopped_ 和 worker 生命周期状态。
     bool stopped_ = true;// true 表示 dispatcher 未运行或正在停止。
-    
-    std::thread worker_;    // 当前第一版的单 worker 线程。
+
+    ShardedThreadPool pool_; // 业务线程池；同一连接按 conn 指针分片，尽量保持连接内事件顺序。
     std::thread delivery_worker_; // 后台投递线程，负责超时重投。
     UserStateService user_state_;
     MessageStore message_store_;

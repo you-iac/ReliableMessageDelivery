@@ -14,6 +14,7 @@ const uint64_t kAckTimeoutMs = 10000;
 const int kDeliveryScanIntervalMs = 1000;
 const int kMaxDeliveryRetryCount = 3;
 const std::size_t kLoginRecentMessageLimit = 100;
+const std::size_t kBusinessWorkerCount = 8;
 //获取当前时间
 uint64_t NowMs() {
     using namespace std::chrono;
@@ -22,30 +23,35 @@ uint64_t NowMs() {
             system_clock::now().time_since_epoch()).count());
 }
 
-}  // namespace
-
-ServerEventDispatcher::ServerEventDispatcher() {
+uintptr_t EventShardKey(const muduo::net::TcpConnectionPtr& conn) {
+    return reinterpret_cast<uintptr_t>(conn.get());
 }
 
-// 停止后台 worker，避免析构后线程继续访问对象。
+}  // namespace
+
+ServerEventDispatcher::ServerEventDispatcher()
+    : pool_(kBusinessWorkerCount) {
+}
+
+// 停止后台线程，避免析构后线程继续访问对象。
 ServerEventDispatcher::~ServerEventDispatcher() {
     stop();
 }
 
-// 启动业务 worker 线程。
+// 启动业务线程池。
 void ServerEventDispatcher::start() {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (!stopped_) {
         return;
     }
-    
+
     stopped_ = false;
-    worker_ = std::thread(&ServerEventDispatcher::workerLoop, this);
+    pool_.start();
     delivery_worker_ = std::thread(&ServerEventDispatcher::deliveryLoop, this);
 }
 
-// 停止 worker，并等待已入队事件处理完成。
+// 停止线程池，并等待已提交事件处理完成。
 void ServerEventDispatcher::stop() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -56,20 +62,17 @@ void ServerEventDispatcher::stop() {
         stopped_ = true;
     }
 
-    not_empty_.notify_all();
-    if (worker_.joinable()) {
-        worker_.join();
-    }
+    pool_.stop();
     if (delivery_worker_.joinable()) {
         delivery_worker_.join();
     }
 }
 
-// 将客户端 Envelope 事件投递到业务队列。
+// 将客户端 Envelope 事件投递到线程池。
 bool ServerEventDispatcher::enqueueEnvelope(
             const muduo::net::TcpConnectionPtr& conn,
             const message::Envelope& envelope) {
-    // 网络线程只负责把已解码的 Envelope 入队，业务处理统一交给 worker。
+    // 网络线程只负责把已解码的 Envelope 提交给业务线程池。
     // 这样 ChatServer 不需要持有业务状态，也避免在 Muduo IO 线程里做耗时逻辑。
     ServerEvent event;
     event.type = ServerEvent::Type::Envelope;
@@ -80,58 +83,30 @@ bool ServerEventDispatcher::enqueueEnvelope(
         if (stopped_) {
             return false;
         }
-
-
-        inbox_.push(event);
     }
 
-    not_empty_.notify_one();
-    return true;
+    return pool_.submit(EventShardKey(conn), [this, event] {
+        handle(event);
+    });
 }
 
-// 将连接断开事件投递到业务队列。
+// 将连接断开事件投递到业务线程池。
 bool ServerEventDispatcher::enqueueConnectionClosed(
     const muduo::net::TcpConnectionPtr& conn) {
+    ServerEvent event;
+    event.type = ServerEvent::Type::ConnectionClosed;
+    event.conn = conn;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopped_) {
             return false;
         }
-
-        // 断开事件也进入同一个队列，保证同一连接上的 LOGIN_REQ/CHAT_REQ/断开按顺序生效。
-        // 否则可能出现连接已断开但稍后处理 LOGIN_REQ 又把用户标记为在线的竞态。
-        ServerEvent event;
-        event.type = ServerEvent::Type::ConnectionClosed;
-        event.conn = conn;
-        inbox_.push(event);
     }
-    
-    not_empty_.notify_one();
-    return true;
-}
 
-// worker 主循环：等待事件、取出事件、在锁外处理。
-void ServerEventDispatcher::workerLoop() {
-    while (true) {
-        ServerEvent event;
-        {
-            //条件变量，等待队列非空或 stop() 被调用。
-            std::unique_lock<std::mutex> lock(mutex_);
-            not_empty_.wait(lock, [this] {
-                return stopped_ || !inbox_.empty();
-            });
-
-            // stop() 只阻止新事件继续入队；已经入队的事件会先处理完再退出。
-            if (stopped_ && inbox_.empty()) {
-                return;
-            }
-
-            event = inbox_.front();
-            inbox_.pop();
-        }
-
+    // 断开事件使用同一个 conn 分片 key，尽量保证 LOGIN_REQ/CHAT_REQ/断开按提交顺序处理。
+    return pool_.submit(EventShardKey(conn), [this, event] {
         handle(event);
-    }
+    });
 }
 
 // 根据事件类型和 Envelope 类型分发到具体处理函数。
