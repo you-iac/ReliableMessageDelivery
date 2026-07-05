@@ -7,10 +7,17 @@ const state = {
   activePeerUid: null,
   conversations: new Map(),
   pendingByClientMsgId: new Map(),
+  renderedMessageIds: new Set(),
+  incomingRenderTimer: null,
+  incomingRenderNeedsList: false,
+  incomingRenderNeedsMessages: false,
+  incomingRenderPeerUid: null,
+  incomingRenderScrollMode: null,
 };
 
 const MESSAGE_PAGE_SIZE = 100;
 const LOAD_OLDER_THRESHOLD_PX = 24;
+const INCOMING_RENDER_DELAY_MS = 50;
 
 const els = {
   authView: document.querySelector('#auth-view'),
@@ -261,10 +268,7 @@ function handleServerMessage(raw) {
   }
 
   if (msg.type === 'message') {
-    appendIncomingMessage(msg);
-    if (!msg.history) {
-      sendMessageAck(msg.msg_id);
-    }
+    handleIncomingMessage(msg);
     return;
   }
 
@@ -278,6 +282,24 @@ function handleServerMessage(raw) {
   }
 
   addSystemMessageToActive(`未知消息类型: ${msg.type || 'unknown'}`);
+}
+
+function handleIncomingMessage(msg) {
+  const msgId = parsePositiveInteger(msg.msg_id);
+  const isHistory = msg.history === true;
+
+  if (!isHistory) {
+    sendMessageAck(msgId);
+  }
+
+  if (msgId && state.renderedMessageIds.has(msgId)) {
+    return;
+  }
+  if (msgId) {
+    state.renderedMessageIds.add(msgId);
+  }
+
+  appendIncomingMessage(msg, msgId);
 }
 
 function sendMessage() {
@@ -335,15 +357,19 @@ function applySendAck(msg) {
   }
 
   const shouldScrollToBottom = pending.peerUid === state.activePeerUid && isMessageListNearBottom();
-  pending.message.msg_id = msg.msg_id || null;
+  const msgId = parsePositiveInteger(msg.msg_id);
+  pending.message.msg_id = msgId;
   pending.message.status = msg.ok ? 'sent' : 'failed';
   pending.message.reason = msg.reason || '';
+  if (msg.ok && msgId) {
+    state.renderedMessageIds.add(msgId);
+  }
   state.pendingByClientMsgId.delete(msg.client_msg_id);
   renderConversationList();
   renderMessages({ scrollMode: shouldScrollToBottom ? 'bottom' : 'preserve' });
 }
 
-function appendIncomingMessage(msg) {
+function appendIncomingMessage(msg, msgId) {
   const fromUid = Number(msg.from_uid);
   const toUid = Number(msg.to_uid || state.uid);
   const peerUid = fromUid === state.uid ? toUid : fromUid;
@@ -353,7 +379,7 @@ function appendIncomingMessage(msg) {
 
   conversation.messages.push({
     direction: fromUid === state.uid ? 'outgoing' : 'incoming',
-    msg_id: msg.msg_id,
+    msg_id: msgId,
     from_uid: fromUid,
     to_uid: toUid,
     content: msg.content || '',
@@ -368,8 +394,11 @@ function appendIncomingMessage(msg) {
     conversation.unread += 1;
   }
 
-  renderConversationList();
-  renderMessages({ scrollMode: shouldScrollToBottom ? 'bottom' : 'preserve' });
+  scheduleIncomingRender({
+    renderMessages: isActiveConversation,
+    peerUid,
+    scrollMode: shouldScrollToBottom ? 'bottom' : 'preserve',
+  });
 }
 
 function sendMessageAck(msgId) {
@@ -381,6 +410,53 @@ function sendMessageAck(msgId) {
     type: 'message_ack',
     msg_id: msgId,
   }));
+}
+
+function scheduleIncomingRender(options = {}) {
+  state.incomingRenderNeedsList = true;
+  if (options.renderMessages) {
+    state.incomingRenderNeedsMessages = true;
+    state.incomingRenderPeerUid = options.peerUid;
+    state.incomingRenderScrollMode = options.scrollMode || 'preserve';
+  }
+
+  if (state.incomingRenderTimer !== null) {
+    return;
+  }
+
+  state.incomingRenderTimer = setTimeout(flushIncomingRender, INCOMING_RENDER_DELAY_MS);
+}
+
+function flushIncomingRender() {
+  const shouldRenderList = state.incomingRenderNeedsList;
+  const shouldRenderMessages =
+    state.incomingRenderNeedsMessages &&
+    state.incomingRenderPeerUid === state.activePeerUid;
+  const scrollMode = state.incomingRenderScrollMode || 'preserve';
+
+  state.incomingRenderTimer = null;
+  state.incomingRenderNeedsList = false;
+  state.incomingRenderNeedsMessages = false;
+  state.incomingRenderPeerUid = null;
+  state.incomingRenderScrollMode = null;
+
+  if (shouldRenderList) {
+    renderConversationList();
+  }
+  if (shouldRenderMessages) {
+    renderMessages({ scrollMode });
+  }
+}
+
+function clearIncomingRenderTimer() {
+  if (state.incomingRenderTimer !== null) {
+    clearTimeout(state.incomingRenderTimer);
+  }
+  state.incomingRenderTimer = null;
+  state.incomingRenderNeedsList = false;
+  state.incomingRenderNeedsMessages = false;
+  state.incomingRenderPeerUid = null;
+  state.incomingRenderScrollMode = null;
 }
 
 function addConversation(peerUid) {
@@ -638,6 +714,7 @@ function logout() {
 }
 
 function resetChatState() {
+  clearIncomingRenderTimer();
   state.uid = null;
   state.token = '';
   state.sessionId = '';
@@ -645,6 +722,7 @@ function resetChatState() {
   state.activePeerUid = null;
   state.conversations = new Map();
   state.pendingByClientMsgId = new Map();
+  state.renderedMessageIds = new Set();
 }
 
 function updateHeader() {
@@ -674,8 +752,12 @@ function buildWebSocketUrl(token) {
 }
 
 function parsePositiveUid(value) {
-  const uid = Number(value);
-  return Number.isInteger(uid) && uid > 0 ? uid : null;
+  return parsePositiveInteger(value);
+}
+
+function parsePositiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 function setComposerEnabled(enabled) {
