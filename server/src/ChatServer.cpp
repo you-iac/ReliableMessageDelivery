@@ -5,11 +5,38 @@
 #include <muduo/net/InetAddress.h>
 #include <muduo/net/TcpServer.h>
 
+#include <chrono>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Codec.h"
 #include "EnvelopeInspector.h"
+
+namespace {
+
+bool QueueMonitorEnabled() {
+    const char* value = std::getenv("RMD_QUEUE_MONITOR");
+    return value == nullptr || value[0] != '0';
+}
+
+std::string MakeBar(std::size_t value, std::size_t max_value) {
+    const std::size_t kWidth = 40;
+    std::size_t width = 0;
+    if (max_value > 0) {
+        width = value * kWidth / max_value;
+        if (value > 0 && width == 0) {
+            width = 1;
+        }
+    }
+    return std::string(width, '#') + std::string(kWidth - width, '.');
+}
+
+}  // namespace
 
 ChatServer::ChatServer(uint16_t port, int thread_num)
     : port_(port),
@@ -35,10 +62,12 @@ bool ChatServer::start() {
         });
     // 启动业务分发器线程池，准备处理后续到达的 Envelope。
     dispatcher_.start();
+    startQueueMonitor();
 
     LOG_INFO << "server init successful";
     server.start();
     event_loop.loop();
+    stopQueueMonitor();
     dispatcher_.stop();
     return true;
 }
@@ -108,6 +137,53 @@ void ChatServer::onMessage(const TcpConnectionPtr& conn,
         dispatcher_.enqueueEnvelope(conn, envelope);
     }
 
+}
+
+void ChatServer::startQueueMonitor() {
+    if (!QueueMonitorEnabled()) {
+        return;
+    }
+
+    stop_queue_monitor_.store(false);
+    queue_monitor_ = std::thread([this] {
+        while (!stop_queue_monitor_.load()) {
+            renderQueueStatus();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    });
+}
+
+void ChatServer::stopQueueMonitor() {
+    stop_queue_monitor_.store(true);
+    if (queue_monitor_.joinable()) {
+        queue_monitor_.join();
+    }
+}
+
+void ChatServer::renderQueueStatus() {
+    std::vector<std::size_t> sizes = dispatcher_.getWorkerQueueSizes();
+    std::size_t total = 0;
+    std::size_t max_value = 0;
+    for (std::size_t size : sizes) {
+        total += size;
+        if (size > max_value) {
+            max_value = size;
+        }
+    }
+
+    std::ostringstream output;
+    output << "\033[2J\033[H";
+    output << "RMD server queue monitor\n";
+    output << "logs: logs/server.log.* | workers=" << sizes.size()
+           << " total_queued=" << total << "\n\n";
+
+    for (std::size_t i = 0; i < sizes.size(); ++i) {
+        output << "worker " << std::setw(2) << std::setfill('0') << i
+               << std::setfill(' ') << " [" << MakeBar(sizes[i], max_value)
+               << "] " << sizes[i] << "\n";
+    }
+
+    std::cout << output.str() << std::flush;
 }
 
 ClientSession* ChatServer::findSessionLocked(const TcpConnectionPtr& conn) {

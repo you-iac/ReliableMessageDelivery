@@ -5,10 +5,13 @@
 #include <muduo/net/TcpConnection.h>
 #include <muduo/base/Timestamp.h>
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "Message.pb.h"
 #include "ServerEventDispatcher.h"
@@ -47,12 +50,18 @@ private:
     /// 调用方必须已经持有 mutex_。
     ClientSession* findSessionLocked(const TcpConnectionPtr& conn);
 
+    void startQueueMonitor();
+    void stopQueueMonitor();
+    void renderQueueStatus();
+
     uint16_t port_;
     int thread_num_;
     std::mutex mutex_;
     std::unordered_map<const muduo::net::TcpConnection*, ClientSession> sessionsTable_;
 
     ServerEventDispatcher dispatcher_; // 业务事件分发器，负责处理 ChatServer 投递的事件。
+    std::atomic<bool> stop_queue_monitor_{false};
+    std::thread queue_monitor_;
 };
 
 #endif
