@@ -7,6 +7,7 @@
 #include "Codec.h"
 #include "EnvelopeFactory.h"
 #include "EnvelopeInspector.h"
+#include "PerfStats.h"
 
 namespace {
 
@@ -109,6 +110,10 @@ bool ServerEventDispatcher::enqueueConnectionClosed(
     });
 }
 
+std::vector<std::size_t> ServerEventDispatcher::getWorkerQueueSizes() const {
+    return pool_.getQueueSizes();
+}
+
 // 根据事件类型和 Envelope 类型分发到具体处理函数。
 void ServerEventDispatcher::handle(const ServerEvent& event) {
     if (event.type == ServerEvent::Type::ConnectionClosed) {
@@ -167,8 +172,16 @@ void ServerEventDispatcher::handleLogin(const ServerEvent& event) {
 
 // 处理聊天请求，校验发送方并做在线转发。
 void ServerEventDispatcher::handleChat(const ServerEvent& event) {
+    PerfClock::time_point total_start = PerfClock::now();
+    auto finish_chat = [&] {
+        PerfStats::Record(PerfStage::HandleChatTotal,
+                          PerfElapsedUs(total_start));
+        PerfStats::MaybeLog();
+    };
+
     if (!event.envelope.has_chat_req()) {
         sendErrorAck(event.conn, event.envelope.seq(), "invalid chat request");
+        finish_chat();
         return;
     }
 
@@ -178,6 +191,7 @@ void ServerEventDispatcher::handleChat(const ServerEvent& event) {
     uint64_t uid = user_state_.getUidByConn(event.conn);
     if (uid == 0) {
         sendErrorAck(event.conn, event.envelope.seq(), "please login first");
+        finish_chat();
         return;
     }
 
@@ -186,18 +200,23 @@ void ServerEventDispatcher::handleChat(const ServerEvent& event) {
         sendErrorAck(event.conn,
                      event.envelope.seq(),
                      "from_uid does not match session");
+        finish_chat();
         return;
     }
 
+    PerfClock::time_point create_start = PerfClock::now();
     CreateMessageResult create_result = message_store_.createMessage(
         request.from_uid(),
         request.to_uid(),
         request.content(),
         request.client_msg_id());
+    PerfStats::Record(PerfStage::HandleChatCreate,
+                      PerfElapsedUs(create_start));
     if (!create_result.ok) {
         sendErrorAck(event.conn,
                      event.envelope.seq(),
                      "message store unavailable");
+        finish_chat();
         return;
     }
 
@@ -206,21 +225,42 @@ void ServerEventDispatcher::handleChat(const ServerEvent& event) {
     if (!create_result.created) {
         // 客户端超时重试会携带相同 client_msg_id。
         // 命中幂等索引时只返回原 msg_id 的 ACK，不重复创建和投递消息。
+        PerfClock::time_point send_ack_start = PerfClock::now();
         sendEnvelope(event.conn, EnvelopeFactory::CreateAck(
             event.envelope.seq(), record.msg_id, true, "duplicate message"));
+        PerfStats::Record(PerfStage::HandleChatSendAck,
+                          PerfElapsedUs(send_ack_start));
+        finish_chat();
         return;
     }
 
+    PerfClock::time_point deliver_start = PerfClock::now();
     tryDeliverMessage(record);
+    PerfStats::Record(PerfStage::HandleChatDeliver,
+                      PerfElapsedUs(deliver_start));
+
     // 这里的 ACK 是给发送方的“服务端已接收/处理”确认，不是接收方消费确认。
+    PerfClock::time_point send_ack_start = PerfClock::now();
     sendEnvelope(event.conn, EnvelopeFactory::CreateAck(
         event.envelope.seq(), record.msg_id, true, ""));
+    PerfStats::Record(PerfStage::HandleChatSendAck,
+                      PerfElapsedUs(send_ack_start));
+    finish_chat();
 }
+
 
 // 处理接收方 ACK，并更新消息消费状态。
 void ServerEventDispatcher::handleAck(const ServerEvent& event) {
+    PerfClock::time_point total_start = PerfClock::now();
+    auto finish_ack = [&] {
+        PerfStats::Record(PerfStage::HandleAckTotal,
+                          PerfElapsedUs(total_start));
+        PerfStats::MaybeLog();
+    };
+
     if (!event.envelope.has_ack()) {
         LOG_INFO << "Invalid ACK without payload";
+        finish_ack();
         return;
     }
 
@@ -228,24 +268,33 @@ void ServerEventDispatcher::handleAck(const ServerEvent& event) {
     if (ack.msg_id() == 0) {
         LOG_INFO << "Invalid ACK without msg_id: "
                  << EnvelopeInspector::ToString(event.envelope);
+        finish_ack();
         return;
     }
 
     uint64_t uid = user_state_.getUidByConn(event.conn);
     if (uid == 0) {
         LOG_INFO << "ACK from anonymous connection. msg_id=" << ack.msg_id();
+        finish_ack();
         return;
     }
 
     // Redis 脚本内部校验 uid 是否匹配消息接收方，避免 ACK 路径额外读一次消息记录。
-    if (!message_store_.markAcked(ack.msg_id(), uid)) {
+    PerfClock::time_point mark_start = PerfClock::now();
+    bool acked = message_store_.markAcked(ack.msg_id(), uid);
+    PerfStats::Record(PerfStage::HandleAckMarkAcked,
+                      PerfElapsedUs(mark_start));
+    if (!acked) {
         LOG_INFO << "ACK update rejected. msg_id=" << ack.msg_id()
                  << ", ack_uid=" << uid;
+        finish_ack();
         return;
     }
-    
+
     // LOG_INFO << "Received ack: " << EnvelopeInspector::ToString(event.envelope);
+    finish_ack();
 }
+
 
 // 处理心跳，刷新连接活跃时间。
 void ServerEventDispatcher::handleHeartbeat(const ServerEvent& event) {

@@ -1,5 +1,7 @@
 #include "MessageStore.h"
 
+#include "PerfStats.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -481,7 +483,10 @@ CreateMessageResult MessageStore::createMessage(
     const std::string& content,
     const std::string& client_msg_id) {
     CreateMessageResult result;
-    std::lock_guard<std::mutex> lock(redis_mutex_);
+    PerfClock::time_point lock_start = PerfClock::now();
+    std::unique_lock<std::mutex> lock(redis_mutex_);
+    PerfStats::Record(PerfStage::RedisCreateLockWait,
+                      PerfElapsedUs(lock_start));
     if (!ensureConnectedLocked()) {
         return result;
     }
@@ -491,6 +496,7 @@ CreateMessageResult MessageStore::createMessage(
     std::string pending_key = MakePendingKey(to_uid);
     std::string from_recent_key = MakeRecentKey(from_uid);
     std::string to_recent_key = MakeRecentKey(to_uid);
+    PerfClock::time_point eval_start = PerfClock::now();
     RedisReplyPtr reply = EvalCreateMessage(redis_,
                                             idem_key,
                                             pending_key,
@@ -501,6 +507,8 @@ CreateMessageResult MessageStore::createMessage(
                                             content,
                                             client_msg_id,
                                             NowMs());
+    PerfStats::Record(PerfStage::RedisCreateEval,
+                      PerfElapsedUs(eval_start));
     if (IsConnectionBroken(redis_, reply.get())) {
         closeConnectionLocked();
         return result;
@@ -516,16 +524,22 @@ CreateMessageResult MessageStore::createMessage(
 
 // 标记消息已投递给接收方，并加入 Delivered 超时扫描索引。
 bool MessageStore::markDelivered(uint64_t msg_id) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
+    PerfClock::time_point lock_start = PerfClock::now();
+    std::unique_lock<std::mutex> lock(redis_mutex_);
+    PerfStats::Record(PerfStage::RedisMarkDeliveredLockWait,
+                      PerfElapsedUs(lock_start));
     if (!ensureConnectedLocked()) {
         return false;
     }
 
+    PerfClock::time_point eval_start = PerfClock::now();
     RedisReplyPtr reply = EvalMsgStateScript(redis_,
                                              kMarkDeliveredScript,
                                              sizeof(kMarkDeliveredScript) - 1,
                                              msg_id,
                                              NowMs());
+    PerfStats::Record(PerfStage::RedisMarkDeliveredEval,
+                      PerfElapsedUs(eval_start));
     if (IsConnectionBroken(redis_, reply.get())) {
         closeConnectionLocked();
         return false;
@@ -554,15 +568,21 @@ bool MessageStore::markPending(uint64_t msg_id) {
 
 // 接收方确认消费后，消息进入 Acked 状态并从重投相关索引中移除。
 bool MessageStore::markAcked(uint64_t msg_id, uint64_t ack_uid) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
+    PerfClock::time_point lock_start = PerfClock::now();
+    std::unique_lock<std::mutex> lock(redis_mutex_);
+    PerfStats::Record(PerfStage::RedisMarkAckedLockWait,
+                      PerfElapsedUs(lock_start));
     if (!ensureConnectedLocked()) {
         return false;
     }
 
+    PerfClock::time_point eval_start = PerfClock::now();
     RedisReplyPtr reply = EvalMarkAckedScript(redis_,
                                               msg_id,
                                               ack_uid,
                                               NowMs());
+    PerfStats::Record(PerfStage::RedisMarkAckedEval,
+                      PerfElapsedUs(eval_start));
     if (IsConnectionBroken(redis_, reply.get())) {
         closeConnectionLocked();
         return false;
