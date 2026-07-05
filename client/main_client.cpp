@@ -32,45 +32,51 @@ int CountByType(const std::vector<message::Envelope>& messages,
     return count;
 }
 
-struct MessageCounts {
-    int login_resps = 0;
-    int acks = 0;
-    int chat_pushes = 0;
-};
-
-int TotalSenderAcks(const std::vector<std::unique_ptr<Client>>& senders) {
+int TotalClientAcks(const std::vector<std::unique_ptr<Client>>& clients) {
     int total = 0;
-    for (const auto& sender : senders) {
-        total += sender->getAckCount();
+    for (const auto& client : clients) {
+        total += client->getAckCount();
     }
     return total;
 }
 
-int TotalSenderLoginResponses(
-    const std::vector<std::unique_ptr<Client>>& senders) {
+int TotalClientLoginResponses(
+    const std::vector<std::unique_ptr<Client>>& clients) {
     int total = 0;
-    for (const auto& sender : senders) {
-        total += sender->getLoginResponseCount();
+    for (const auto& client : clients) {
+        total += client->getLoginResponseCount();
     }
     return total;
 }
 
-void StopSendersConcurrently(std::vector<std::unique_ptr<Client>>& senders) {
+int TotalClientChatPushes(const std::vector<std::unique_ptr<Client>>& clients) {
+    int total = 0;
+    for (const auto& client : clients) {
+        total += client->getChatPushCount();
+    }
+    return total;
+}
+
+uint64_t ClientUid(int index) {
+    return static_cast<uint64_t>(1000 + index);
+}
+
+void StopClientsConcurrently(std::vector<std::unique_ptr<Client>>& clients) {
     const std::size_t kCloseGroupSize = 10;
     std::vector<std::thread> close_workers;
-    close_workers.reserve((senders.size() + kCloseGroupSize - 1) /
+    close_workers.reserve((clients.size() + kCloseGroupSize - 1) /
                           kCloseGroupSize);
 
-    for (std::size_t begin = 0; begin < senders.size();
+    for (std::size_t begin = 0; begin < clients.size();
          begin += kCloseGroupSize) {
         std::size_t end = begin + kCloseGroupSize;
-        if (end > senders.size()) {
-            end = senders.size();
+        if (end > clients.size()) {
+            end = clients.size();
         }
 
-        close_workers.emplace_back([&senders, begin, end] {
+        close_workers.emplace_back([&clients, begin, end] {
             for (std::size_t i = begin; i < end; ++i) {
-                senders[i]->stopClient();
+                clients[i]->stopClient();
             }
         });
     }
@@ -80,40 +86,32 @@ void StopSendersConcurrently(std::vector<std::unique_ptr<Client>>& senders) {
     }
 }
 
-int RunStressTest(int sender_count,
-                  int messages_per_sender,
+int RunStressTest(int client_count,
+                  int messages_per_client,
                   bool verbose,
                   int wait_timeout_seconds) {
-    const int total_messages = sender_count * messages_per_sender;
+    const int total_messages = client_count * messages_per_client;
 
-    std::cout << "stress config: senders=" << sender_count
-              << ", messages_per_sender=" << messages_per_sender
+    std::cout << "stress config: clients=" << client_count
+              << ", messages_per_client=" << messages_per_client
               << ", total_messages=" << total_messages
+              << ", route=ring"
               << ", verbose=" << (verbose ? "true" : "false")
               << ", wait_timeout_seconds=" << wait_timeout_seconds << "\n";
 
-    Client receiver;
-    receiver.setVerbose(verbose);
-    const uint64_t receiver_uid = 1;
-    if (!receiver.startClient(receiver_uid)) {
-        receiver.stopClient();
-        return 1;
-    }
-
-    std::vector<std::unique_ptr<Client>> senders;
-    senders.reserve(static_cast<std::size_t>(sender_count));
-    for (int i = 0; i < sender_count; ++i) {
-        std::unique_ptr<Client> sender(new Client());
-        sender->setVerbose(verbose);
-        uint64_t sender_uid = static_cast<uint64_t>(1000 + i);
-        if (!sender->startClient(sender_uid)) {
-            std::cerr << "failed to start sender uid=" << sender_uid << "\n";
-            sender->stopClient();
-            StopSendersConcurrently(senders);
-            receiver.stopClient();
+    std::vector<std::unique_ptr<Client>> clients;
+    clients.reserve(static_cast<std::size_t>(client_count));
+    for (int i = 0; i < client_count; ++i) {
+        std::unique_ptr<Client> client(new Client());
+        client->setVerbose(verbose);
+        uint64_t uid = ClientUid(i);
+        if (!client->startClient(uid)) {
+            std::cerr << "failed to start client uid=" << uid << "\n";
+            client->stopClient();
+            StopClientsConcurrently(clients);
             return 1;
         }
-        senders.push_back(std::move(sender));
+        clients.push_back(std::move(client));
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -121,18 +119,20 @@ int RunStressTest(int sender_count,
     std::atomic<int> send_ok{0};
     std::atomic<int> send_failed{0};
     std::vector<std::thread> workers;
-    workers.reserve(static_cast<std::size_t>(sender_count));
+    workers.reserve(static_cast<std::size_t>(client_count));
 
     auto started_at = std::chrono::steady_clock::now();
-    for (int i = 0; i < sender_count; ++i) {
+    for (int i = 0; i < client_count; ++i) {
         workers.emplace_back([&, i] {
-            uint64_t sender_uid = static_cast<uint64_t>(1000 + i);
-            for (int n = 0; n < messages_per_sender; ++n) {
+            uint64_t sender_uid = ClientUid(i);
+            uint64_t receiver_uid = ClientUid((i + 1) % client_count);
+            for (int n = 0; n < messages_per_client; ++n) {
                 std::ostringstream oss;
                 oss << "stress message sender=" << sender_uid
+                    << " receiver=" << receiver_uid
                     << " index=" << n;
 
-                if (senders[static_cast<std::size_t>(i)]->sendMessage(
+                if (clients[static_cast<std::size_t>(i)]->sendMessage(
                         receiver_uid, oss.str())) {
                     ++send_ok;
                 } else {
@@ -151,8 +151,8 @@ int RunStressTest(int sender_count,
         std::chrono::duration_cast<std::chrono::milliseconds>(
             send_finished_at - started_at).count() / 1000.0;
 
-    int sender_acks = 0;
-    int receiver_pushes = 0;
+    int client_acks = 0;
+    int client_pushes = 0;
     auto wait_started_at = std::chrono::steady_clock::now();
     auto ack_completed_at = wait_started_at;
     auto push_completed_at = wait_started_at;
@@ -160,20 +160,20 @@ int RunStressTest(int sender_count,
     bool push_done = false;
 
     while (true) {
-        sender_acks = TotalSenderAcks(senders);
-        receiver_pushes = receiver.getChatPushCount();
+        client_acks = TotalClientAcks(clients);
+        client_pushes = TotalClientChatPushes(clients);
 
         auto now = std::chrono::steady_clock::now();
-        if (!ack_done && sender_acks >= total_messages) {
+        if (!ack_done && client_acks >= total_messages) {
             ack_done = true;
             ack_completed_at = now;
         }
-        if (!push_done && receiver_pushes >= total_messages) {
+        if (!push_done && client_pushes >= total_messages) {
             push_done = true;
             push_completed_at = now;
         }
 
-        // 即使本轮计数已经达标，也继续等到超时，方便 receiver 消费历史 Pending。
+        // 即使本轮计数已经达标，也继续等到超时，方便客户端消费历史 Pending。
         int waited_seconds = static_cast<int>(
             std::chrono::duration_cast<std::chrono::seconds>(
                 now - wait_started_at).count());
@@ -185,11 +185,7 @@ int RunStressTest(int sender_count,
     }
 
     auto finished_at = std::chrono::steady_clock::now();
-    MessageCounts receiver_counts;
-    receiver_counts.login_resps = receiver.getLoginResponseCount();
-    receiver_counts.acks = receiver.getAckCount();
-    receiver_counts.chat_pushes = receiver.getChatPushCount();
-    int sender_login_resps = TotalSenderLoginResponses(senders);
+    int client_login_resps = TotalClientLoginResponses(clients);
 
     double ack_elapsed_seconds =
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -210,32 +206,27 @@ int RunStressTest(int sender_count,
     std::cout << "  total_elapsed_seconds: " << total_elapsed_seconds << "\n";
     std::cout << "  send_ok:               " << send_ok.load() << "\n";
     std::cout << "  send_failed:           " << send_failed.load() << "\n";
-    std::cout << "  receiver_login_resps:  "
-              << receiver_counts.login_resps << "\n";
-    std::cout << "  receiver_chat_pushes:  "
-              << receiver_counts.chat_pushes << "\n";
-    std::cout << "  sender_login_resps:    " << sender_login_resps << "\n";
-    std::cout << "  sender_acks:           " << sender_acks << "\n";
+    std::cout << "  client_login_resps:    " << client_login_resps << "\n";
+    std::cout << "  client_chat_pushes:    " << client_pushes << "\n";
+    std::cout << "  client_acks:           " << client_acks << "\n";
     if (send_elapsed_seconds > 0) {
         std::cout << "  client_write_throughput: "
                   << send_ok.load() / send_elapsed_seconds << " msg/s\n";
     }
     if (ack_elapsed_seconds > 0) {
         std::cout << "  server_ack_throughput:   "
-                  << sender_acks / ack_elapsed_seconds << " msg/s\n";
+                  << client_acks / ack_elapsed_seconds << " msg/s\n";
     }
     if (push_elapsed_seconds > 0) {
-        std::cout << "  receiver_push_throughput: "
-                  << receiver_counts.chat_pushes / push_elapsed_seconds
-                  << " msg/s\n";
+        std::cout << "  client_push_throughput:  "
+                  << client_pushes / push_elapsed_seconds << " msg/s\n";
     }
 
-    StopSendersConcurrently(senders);
-    receiver.stopClient();
+    StopClientsConcurrently(clients);
 
     return (send_failed.load() == 0 &&
-            sender_acks >= total_messages &&
-            receiver_counts.chat_pushes >= total_messages)
+            client_acks >= total_messages &&
+            client_pushes >= total_messages)
                ? 0
                : 1;
 }
@@ -243,15 +234,15 @@ int RunStressTest(int sender_count,
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    const int sender_count = argc > 1 ? ParsePositiveInt(argv[1], 8) : 8;
-    const int messages_per_sender =
+    const int client_count = argc > 1 ? ParsePositiveInt(argv[1], 8) : 8;
+    const int messages_per_client =
         argc > 2 ? ParsePositiveInt(argv[2], 100) : 100;
     const bool verbose = argc > 3 && std::string(argv[3]) == "verbose";
     const int wait_timeout_seconds =
         argc > 4 ? ParsePositiveInt(argv[4], 30) : 30;
     
-    return RunStressTest(sender_count,
-                         messages_per_sender,
+    return RunStressTest(client_count,
+                         messages_per_client,
                          verbose,
                          wait_timeout_seconds);
     // Client c;
