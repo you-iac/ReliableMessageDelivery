@@ -1,11 +1,7 @@
 #include "ChatServer.h"
 
-
-int main() {
+int main(int argc, char* argv[]) {
     ChatServer server;
-    if (!server.start()) {
-        return 1;
-    }  
-    
+    server.start();
     return 0;
 }
