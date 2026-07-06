@@ -109,6 +109,21 @@ bool ServerEventDispatcher::enqueueConnectionClosed(
     });
 }
 
+ServerStatus ServerEventDispatcher::getStatus() const {
+    ServerStatus status;
+    ServerStatus::StatusMetric metric;
+    metric.key = "ThreadTaskNums";
+
+    std::vector<std::size_t> queue_sizes = pool_.getQueueSizes();
+    metric.numbers.reserve(queue_sizes.size());
+    for (std::size_t size : queue_sizes) {
+        metric.numbers.push_back(static_cast<uint64_t>(size));
+    }
+
+    status.addMetric(metric);
+    return status;
+}
+
 // 根据事件类型和 Envelope 类型分发到具体处理函数。
 void ServerEventDispatcher::handle(const ServerEvent& event) {
     if (event.type == ServerEvent::Type::ConnectionClosed) {
