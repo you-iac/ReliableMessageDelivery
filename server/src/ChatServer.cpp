@@ -1,19 +1,35 @@
 #include "ChatServer.h"
 
+#include <muduo/base/AsyncLogging.h>
 #include <muduo/base/Logging.h>
 #include <muduo/net/EventLoop.h>
 #include <muduo/net/InetAddress.h>
 #include <muduo/net/TcpServer.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "Codec.h"
 #include "EnvelopeInspector.h"
 
-ChatServer::ChatServer(uint16_t port, int thread_num)
+namespace {
+const int kLogRollSize = 500 * 1000 * 1000;
+std::unique_ptr<muduo::AsyncLogging> g_async_logging;
+
+void asyncOutput(const char* msg, int len) {
+    if (g_async_logging) {
+        g_async_logging->append(msg, len);
+    }
+}
+}
+
+ChatServer::ChatServer(uint16_t port,
+                       int thread_num,
+                       LogOutput log_output)
     : port_(port),
       thread_num_(thread_num) {
+    configureLogging(log_output);
 }
 
 bool ChatServer::start() {
@@ -116,4 +132,14 @@ ClientSession* ChatServer::findSessionLocked(const TcpConnectionPtr& conn) {
         return nullptr;
     }
     return &it->second;
+}
+
+void ChatServer::configureLogging(LogOutput log_output) {
+    if (log_output == LogOutput::kTerminal) {
+        return;
+    }
+
+    g_async_logging.reset(new muduo::AsyncLogging("server", kLogRollSize));
+    g_async_logging->start();
+    muduo::Logger::setOutput(asyncOutput);
 }
