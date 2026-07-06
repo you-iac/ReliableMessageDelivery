@@ -53,11 +53,15 @@ private:
     /// 调用方必须已经持有 mutex_。
     ClientSession* findSessionLocked(const TcpConnectionPtr& conn);
 
+    /// 输出当前服务器状态。当前只打印业务线程池各 worker 的队列长度。
+    void printStatus() const;
+
     /// 根据构造参数配置 Muduo 日志输出。
     void configureLogging(LogOutput log_output);
 
     uint16_t port_;
     int thread_num_;
+    bool enable_status_output_;
     std::mutex mutex_;
     std::unordered_map<const muduo::net::TcpConnection*, ClientSession> sessionsTable_;
 

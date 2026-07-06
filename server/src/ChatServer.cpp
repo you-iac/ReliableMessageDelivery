@@ -6,7 +6,9 @@
 #include <muduo/net/InetAddress.h>
 #include <muduo/net/TcpServer.h>
 
+#include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -28,7 +30,8 @@ ChatServer::ChatServer(uint16_t port,
                        int thread_num,
                        LogOutput log_output)
     : port_(port),
-      thread_num_(thread_num) {
+      thread_num_(thread_num),
+      enable_status_output_(log_output == LogOutput::kFile) {
     configureLogging(log_output);
 }
 
@@ -49,6 +52,12 @@ bool ChatServer::start() {
                Timestamp time) {
             onMessage(conn, buffer, time);
         });
+    if (enable_status_output_) {
+        event_loop.runEvery(1.0, [this] {
+            printStatus();
+        });
+    }
+
     // 启动业务分发器线程池，准备处理后续到达的 Envelope。
     dispatcher_.start();
 
@@ -132,6 +141,25 @@ ClientSession* ChatServer::findSessionLocked(const TcpConnectionPtr& conn) {
         return nullptr;
     }
     return &it->second;
+}
+
+void ChatServer::printStatus() const {
+    ServerStatus status = dispatcher_.getStatus();
+
+    std::ostringstream oss;
+    oss << "server_status";
+    for (const auto& metric : status.metrics()) {
+        oss << " " << metric.key << "=[";
+        for (std::size_t i = 0; i < metric.numbers.size(); ++i) {
+            if (i != 0) {
+                oss << ",";
+            }
+            oss << metric.numbers[i];
+        }
+        oss << "]";
+    }
+
+    std::cout << oss.str() << std::endl;
 }
 
 void ChatServer::configureLogging(LogOutput log_output) {
