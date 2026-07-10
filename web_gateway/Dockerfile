@@ -8,7 +8,7 @@ WORKDIR /app/web_gateway
 RUN npm ci
 
 COPY web_gateway/ ./
-COPY protocol/ /app/protocol/
+COPY common/protocol/ /app/protocol/
 
 RUN npm run build \
     && npm prune --omit=dev
