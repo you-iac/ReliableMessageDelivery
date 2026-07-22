@@ -6,7 +6,7 @@
 - [2026-05-05 Reliable Delivery / ACK / Retry / Idempotency](records/2026-05-05-reliable-delivery-ack-retry-idempotency.md)
 
 
-# ReliableMessageDelivery
+# 轻量级 IM 系统
 > 用户在线时消息实时投递，用户离线时消息可靠保存，用户重连后补发；同时保证消息不重复、不乱序、可追踪、可重试。
 
 这比“聊天服务器”更聚焦，也更像你真的在解决问题。
@@ -65,10 +65,10 @@
 
 ## 简历可以这样写
 
-**IM 消息可靠投递服务｜C++ / Muduo / Redis / MySQL / Protobuf**
+**轻量级 IM 系统｜C++ / Muduo / Redis / MySQL / Protobuf**
 
 项目背景：
-面向即时通信场景下在线消息转发、离线消息补偿和异常投递追踪问题，基于 C++ 实现轻量级消息可靠投递服务，支持实时投递、离线存储、ACK 确认、失败重试和消息状态追踪。
+面向即时通信场景下在线消息转发、离线消息补偿和异常投递追踪问题，基于 C++ 实现轻量级 IM 系统，支持实时投递、离线存储、ACK 确认、失败重试和消息状态追踪。
 
 项目内容：
 

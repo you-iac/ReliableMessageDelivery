@@ -1,18 +1,11 @@
-# ReliableMessageDelivery
+# 轻量级 IM 系统
 
 ```text
 +--------------------------------------------------------------------------------+
 |                                                                                |
-|   RRRRRRRR      MM      MM      DDDDDDDD                                       |
-|   RR     RR     MMM    MMM      DD     DD                                      |
-|   RR     RR     MMMM  MMMM      DD      DD                                     |
-|   RRRRRRRR      MM MMMM MM      DD      DD                                     |
-|   RR   RR       MM  MM  MM      DD      DD                                     |
-|   RR    RR      MM      MM      DD     DD                                      |
-|   RR     RR     MM      MM      DDDDDDDD                                       |
+|                         Lightweight IM System                                  |
 |                                                                                |
-|   Reliable Message Delivery                                                    |
-|   C++ IMServer  +  Redis MessageStore  +  Web Gateway                          |
+|              C++ IMServer + Redis MessageStore + Web Gateway                   |
 |                                                                                |
 +--------------------------------------------------------------------------------+
 ```
@@ -22,7 +15,7 @@
 
 ## 简介
 
-ReliableMessageDelivery 是一个消息项目，用来验证即时通信场景里的关键链路：在线投递、离线暂存、上线补发、发送方 ACK、接收方 ACK、超时重试、幂等去重和消息状态追踪。
+这是一个面向单聊场景的轻量级 IM 系统，用来验证即时通信中的关键链路：在线投递、离线暂存、上线补发、发送方 ACK、接收方 ACK、超时重试、幂等去重和消息状态追踪。
 
 项目核心后端是 C++11 IMServer，消息账本使用 Redis 保存。当前已经新增 `web_gateway/`，用于提供浏览器聊天演示界面：浏览器只连接 Web Gateway，Gateway 再通过现有 TCP/Protobuf 协议连接 C++ IMServer。
 
