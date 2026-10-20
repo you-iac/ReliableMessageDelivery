@@ -13,6 +13,7 @@ services:
   server:
     build:
       context: .
+      network: host
     image: rmd-server:local
     depends_on:
       redis:
@@ -28,6 +29,7 @@ services:
     build:
       context: .
       dockerfile: web_gateway/Dockerfile
+      network: host
     image: rmd-web-gateway:local
     depends_on:
       server:
