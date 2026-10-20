@@ -34,6 +34,16 @@ cd web_gateway
 npm run test:e2e
 ```
 
+If Node.js is not installed on the host, build and use the Gateway build stage
+as the test runner:
+
+```bash
+docker build --target build -f web_gateway/Dockerfile -t rmd-web-gateway:test .
+docker run --rm --network host \
+  -e RMD_BASE_URL=http://127.0.0.1:6780 \
+  rmd-web-gateway:test npm run test:e2e
+```
+
 The smoke test verifies the home page, registration, login, token-authenticated
 WebSocket sessions, sender ACK, receiver push, and receiver message ACK.
 
