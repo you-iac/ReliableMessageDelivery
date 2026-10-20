@@ -17,9 +17,9 @@ FROM docker.m.daocloud.io/library/node:20-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 ENV WEB_GATEWAY_HOST=0.0.0.0
-ENV WEB_GATEWAY_PORT=3000
+ENV WEB_GATEWAY_PORT=6780
 ENV IM_HOST=server
-ENV IM_PORT=8080
+ENV IM_PORT=1556
 
 WORKDIR /app/web_gateway
 
@@ -30,6 +30,6 @@ COPY --from=build /app/web_gateway/public ./public
 COPY --from=build /app/protocol /app/protocol
 
 USER node
-EXPOSE 3000
+EXPOSE 6780
 
 CMD ["npm", "run", "start"]

@@ -42,7 +42,7 @@ bool Client::startClient(uint64_t user_uid) {
         login_reason.clear();
     }
 
-    if (!connectServer("127.0.0.1", 8080)) {
+    if (!connectServer("127.0.0.1", 1556)) {
         return false;
     }
 

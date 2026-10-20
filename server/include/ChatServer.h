@@ -34,7 +34,7 @@ public:
         kTerminal
     };
 
-    ChatServer(uint16_t port = 8080,
+    ChatServer(uint16_t port = 1556,
                int thread_num = 16,
                LogOutput log_output = LogOutput::kFile);
 

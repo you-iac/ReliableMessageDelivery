@@ -62,6 +62,6 @@ COPY --from=build /src/bin/client /app/bin/client
 RUN ldconfig
 
 USER rmd
-EXPOSE 8080
+EXPOSE 1556
 
 CMD ["/app/bin/server"]
