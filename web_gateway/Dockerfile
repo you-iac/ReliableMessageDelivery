@@ -10,7 +10,7 @@ RUN npm ci
 COPY web_gateway/ ./
 COPY common/protocol/ /app/protocol/
 
-RUN npm run build \
+RUN npm test \
     && npm prune --omit=dev
 
 FROM docker.m.daocloud.io/library/node:20-bookworm-slim AS runtime
