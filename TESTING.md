@@ -1,8 +1,8 @@
-# Testing and release flow
+# 测试与发布流程
 
-The long-lived branches are `develop` and `main`. Create a release candidate
-from `develop`, stabilize it without adding features, and merge it into both
-`main` and `develop` after all required checks pass.
+长期维护的分支是 `develop` 和 `main`。从 `develop` 创建候选发布分支，
+在不增加新功能的前提下进行稳定性修复。所有必要检查通过后，将候选
+发布分支分别合并到 `main` 和 `develop`。
 
 ```bash
 git switch develop
@@ -10,9 +10,9 @@ git pull --ff-only origin develop
 git switch -c release/0.1.0
 ```
 
-## Automated checks
+## 自动化检查
 
-Gateway unit tests:
+运行 Gateway 单元测试：
 
 ```bash
 cd web_gateway
@@ -20,13 +20,13 @@ npm ci
 npm test
 ```
 
-C++ protocol tests are run by CTest during the server image build:
+构建 Server 镜像时，由 CTest 运行 C++ 协议测试：
 
 ```bash
 docker compose build server gateway
 ```
 
-Start the release candidate and run the HTTP/WebSocket end-to-end smoke test:
+启动候选版本，并运行 HTTP/WebSocket 端到端冒烟测试：
 
 ```bash
 docker compose up -d --no-build --wait --wait-timeout 60
@@ -34,8 +34,7 @@ cd web_gateway
 npm run test:e2e
 ```
 
-If Node.js is not installed on the host, build and use the Gateway build stage
-as the test runner:
+如果宿主机没有安装 Node.js，可以构建并使用 Gateway 的构建阶段作为测试运行环境：
 
 ```bash
 docker build --target build -f web_gateway/Dockerfile -t rmd-web-gateway:test .
@@ -44,19 +43,18 @@ docker run --rm --network host \
   rmd-web-gateway:test npm run test:e2e
 ```
 
-The smoke test verifies the home page, registration, login, token-authenticated
-WebSocket sessions, sender ACK, receiver push, and receiver message ACK.
+冒烟测试会验证首页、注册、登录、基于 token 认证的 WebSocket 会话、
+发送方 ACK、接收方消息推送以及接收方消息 ACK。
 
-## Manual release checks
+## 人工发布检查
 
-- Redis is healthy and the Server and Gateway remain running without restarts.
-- Two browser users can exchange messages in both directions.
-- A message sent to an offline user is delivered after the user logs in.
-- A delivered and acknowledged message is not shown twice.
-- Server and Redis restarts preserve stored messages and restore service.
-- Gateway restart behavior is documented: authentication is currently in
-  memory and is a known limitation of the demo release.
-- Logs contain no crashes, repeated connection failures, or invalid frames.
+- Redis 状态健康，Server 和 Gateway 持续运行且没有发生重启。
+- 两个浏览器用户可以双向收发消息。
+- 向离线用户发送的消息能在该用户登录后送达。
+- 已投递并确认的消息不会重复显示。
+- 重启 Server 和 Redis 后，已存储的消息仍然保留，服务能够恢复。
+- 已记录 Gateway 重启行为：认证信息目前保存在内存中，这是演示版本的已知限制。
+- 日志中没有崩溃、反复连接失败或无效帧。
 
-After the checks pass, merge `release/0.1.0` into `main`, tag the merge commit
-as `v0.1.0`, and merge the release fixes back into `develop`.
+所有检查通过后，将 `release/0.1.0` 合并到 `main`，为合并提交添加
+`v0.1.0` 标签，然后将发布分支中的修复合并回 `develop`。

@@ -1,43 +1,40 @@
-# Release candidate test report
+# 候选版本测试报告
 
-- Date: 2026-10-21
-- Branch: `release/0.1.0`
-- Candidate commit: `7fcb7b9`
-- Base commit from `develop`: `805834a`
-- Environment: Docker Compose on Linux
+- 日期：2026-10-21
+- 分支：`release/0.1.0`
+- 候选提交：`7fcb7b9`
+- `develop` 基准提交：`805834a`
+- 环境：Linux 上的 Docker Compose
 
-## Automated results
+## 自动化测试结果
 
-| Check | Result | Evidence |
+| 检查项 | 结果 | 验证依据 |
 | --- | --- | --- |
-| Compose configuration | Passed | `docker compose config --quiet` |
-| Patch formatting | Passed | `git diff --check` |
-| C++ build | Passed | Server and client Release targets built in Docker |
-| C++ protocol test | Passed | CTest `codec_test`; single, partial, combined, trailing partial, and invalid frames |
-| Gateway TypeScript build | Passed | `tsc -p tsconfig.json` during `npm test` |
-| Gateway authentication tests | Passed | 4/4 Node tests |
-| Initial HTTP/WebSocket smoke | Passed | Registration, login, token-authenticated sessions, push, sender ACK, receiver ACK; `msg_id=1` |
-| Redis message state | Passed | `rmd:msg:1` reached `Acked`; `retry_count=0` |
-| IMServer restart recovery | Passed | End-to-end smoke repeated successfully; `msg_id=2` |
-| Redis restart recovery | Passed | End-to-end smoke repeated successfully; `msg_id=3` |
+| Compose 配置 | 通过 | `docker compose config --quiet` |
+| 补丁格式 | 通过 | `git diff --check` |
+| C++ 构建 | 通过 | 在 Docker 中成功构建 Server 和 Client 的 Release 目标 |
+| C++ 协议测试 | 通过 | CTest `codec_test`；覆盖完整帧、半包、粘包、尾部半包和无效帧 |
+| Gateway TypeScript 构建 | 通过 | `npm test` 期间执行 `tsc -p tsconfig.json` |
+| Gateway 认证测试 | 通过 | 4/4 项 Node 测试通过 |
+| 首轮 HTTP/WebSocket 冒烟测试 | 通过 | 注册、登录、token 认证会话、消息推送、发送方 ACK、接收方 ACK；`msg_id=1` |
+| Redis 消息状态 | 通过 | `rmd:msg:1` 到达 `Acked` 状态；`retry_count=0` |
+| IMServer 重启恢复 | 通过 | 再次运行端到端冒烟测试并成功；`msg_id=2` |
+| Redis 重启恢复 | 通过 | 再次运行端到端冒烟测试并成功；`msg_id=3` |
 
-## Known limitations and follow-up
+## 已知限制与后续事项
 
-- Authentication users and tokens remain in Gateway process memory. Restarting the
-  Gateway loses them; persistent authentication is outside this demo release.
-- `npm audit --omit=dev` reports one moderate direct dependency finding for
-  `protobufjs 8.6.4` (GHSA-jfj6-75fj-8934 and GHSA-j3f2-48v5-ccww). The current
-  application loads a controlled local `.proto` file rather than user-supplied
-  schema text, but the dependency should be upgraded and the suite rerun before
-  a production release.
-- Browser-based offline delivery and duplicate-render behavior still require the
-  manual checks listed in `TESTING.md` before tagging `v0.1.0`.
-- Redis reports that host `vm.overcommit_memory` is disabled. It did not block
-  this test run, but the production host should set it to `1` and persist the
-  setting before release.
+- 认证用户和 token 保存在 Gateway 进程内存中。重启 Gateway 会丢失这些数据；
+  持久化认证不在本次演示版本的范围内。
+- `npm audit --omit=dev` 报告 `protobufjs 8.6.4` 存在一个中危直接依赖问题
+  （GHSA-jfj6-75fj-8934 和 GHSA-j3f2-48v5-ccww）。当前应用加载的是受控的
+  本地 `.proto` 文件，而不是用户提供的 schema 文本，但在生产发布前仍应升级
+  该依赖并重新运行整套测试。
+- 添加 `v0.1.0` 标签之前，仍需按照 `TESTING.md` 完成基于浏览器的离线消息
+  投递和重复显示行为人工检查。
+- Redis 报告宿主机未启用 `vm.overcommit_memory`。这没有阻塞本轮测试，但生产
+  环境应在发布前将其设置为 `1` 并持久化该配置。
 
-## Release decision
+## 发布结论
 
-The implemented automated checks pass. This commit is suitable as an initial
-release candidate, not yet as the final `v0.1.0`, until the remaining manual
-checks and dependency decision are completed.
+现有自动化检查均已通过。在完成剩余的人工检查和依赖处理决策之前，
+该提交适合作为初始候选版本，但还不能作为最终的 `v0.1.0` 发布。
