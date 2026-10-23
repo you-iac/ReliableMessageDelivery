@@ -3,11 +3,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <vector>
 
-struct redisContext;
+#include "RedisClient.h"
 
 // MessageStatus 表示服务端视角下一条消息的可靠投递状态。
 // 后续 ACK、重试和离线补偿都会围绕这个状态流转。
@@ -101,14 +100,7 @@ public:
         uint64_t timeout_ms);
 
 private:
-    // 调用方必须已经持有 redis_mutex_。
-    bool ensureConnectedLocked();
-
-    // 调用方必须已经持有 redis_mutex_。
-    void closeConnectionLocked();
-
-    redisContext* redis_ = nullptr;
-    std::mutex redis_mutex_;
+    RedisClient redis_client_;
 };
 
 #endif

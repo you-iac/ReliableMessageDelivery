@@ -13,10 +13,10 @@ import { GatewayWebSocketServer } from "./WebSocketServer";
 import { WsSessionManager } from "./WsSessionManager";
 
 const HOST = process.env.WEB_GATEWAY_HOST || "127.0.0.1";
-const PORT = Number(process.env.WEB_GATEWAY_PORT || 3000);
+const PORT = Number(process.env.WEB_GATEWAY_PORT || 6780);
 const TOKEN_TTL_MS = Number(process.env.TOKEN_TTL_MS || 2 * 60 * 60 * 1000);
 const IM_HOST = process.env.IM_HOST || "127.0.0.1";
-const IM_PORT = Number(process.env.IM_PORT || 8080);
+const IM_PORT = Number(process.env.IM_PORT || 1556);
 const PUBLIC_DIR = resolve(__dirname, "..", "public");
 const PROTO_PATH = resolve(__dirname, "..", "..", "protocol", "Message.proto");
 

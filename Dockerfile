@@ -32,7 +32,8 @@ WORKDIR /src
 COPY . .
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build --target server client --parallel
+    && cmake --build build --target server client codec_test --parallel \
+    && ctest --test-dir build --output-on-failure
 
 FROM docker.m.daocloud.io/library/debian:bookworm-slim AS runtime
 
@@ -62,6 +63,6 @@ COPY --from=build /src/bin/client /app/bin/client
 RUN ldconfig
 
 USER rmd
-EXPOSE 8080
+EXPOSE 1556
 
 CMD ["/app/bin/server"]

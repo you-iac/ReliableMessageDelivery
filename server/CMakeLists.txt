@@ -8,6 +8,7 @@ endif()
 add_executable(server main_service.cpp
     src/ChatServer.cpp
     src/MessageStore.cpp
+    src/RedisClient.cpp
     src/UserStateService.cpp
     src/ServerEventDispatcher.cpp
     src/PerfStats.cpp)

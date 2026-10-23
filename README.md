@@ -1,18 +1,11 @@
-# ReliableMessageDelivery
+# 轻量级 IM 系统
 
 ```text
 +--------------------------------------------------------------------------------+
 |                                                                                |
-|   RRRRRRRR      MM      MM      DDDDDDDD                                       |
-|   RR     RR     MMM    MMM      DD     DD                                      |
-|   RR     RR     MMMM  MMMM      DD      DD                                     |
-|   RRRRRRRR      MM MMMM MM      DD      DD                                     |
-|   RR   RR       MM  MM  MM      DD      DD                                     |
-|   RR    RR      MM      MM      DD     DD                                      |
-|   RR     RR     MM      MM      DDDDDDDD                                       |
+|                         Lightweight IM System                                  |
 |                                                                                |
-|   Reliable Message Delivery                                                    |
-|   C++ IMServer  +  Redis MessageStore  +  Web Gateway                          |
+|              C++ IMServer + Redis MessageStore + Web Gateway                   |
 |                                                                                |
 +--------------------------------------------------------------------------------+
 ```
@@ -22,7 +15,7 @@
 
 ## 简介
 
-ReliableMessageDelivery 是一个消息项目，用来验证即时通信场景里的关键链路：在线投递、离线暂存、上线补发、发送方 ACK、接收方 ACK、超时重试、幂等去重和消息状态追踪。
+这是一个面向单聊场景的轻量级 IM 系统，用来验证即时通信中的关键链路：在线投递、离线暂存、上线补发、发送方 ACK、接收方 ACK、超时重试、幂等去重和消息状态追踪。
 
 项目核心后端是 C++11 IMServer，消息账本使用 Redis 保存。当前已经新增 `web_gateway/`，用于提供浏览器聊天演示界面：浏览器只连接 Web Gateway，Gateway 再通过现有 TCP/Protobuf 协议连接 C++ IMServer。
 
@@ -54,8 +47,8 @@ ReliableMessageDelivery 是一个消息项目，用来验证即时通信场景�
                                                               v
                                                    +----------+-----------+
                                                    |                      |
-                                                   |     C++ IMServer     |
-                                                   |   Muduo / C++11      |
+                                                   |       IMServer       |
+                                                   |         Muduo        |
                                                    |                      |
                                                    +----------+-----------+
                                                               |
@@ -136,8 +129,8 @@ Redis MessageStore
 默认端口：
 
 ```text
-Web Gateway: 127.0.0.1:3000
-IMServer:    0.0.0.0:8080
+Web Gateway: 127.0.0.1:6780
+IMServer:    0.0.0.0:1556
 Redis:       127.0.0.1:6379
 ```
 
@@ -229,7 +222,7 @@ ss -ltnp | grep 6379
 IMServer 默认监听：
 
 ```text
-0.0.0.0:8080
+0.0.0.0:1556
 ```
 
 ### 4. 启动 Web Gateway
@@ -243,7 +236,7 @@ npm run dev
 默认访问地址：
 
 ```text
-http://127.0.0.1:3000/
+http://127.0.0.1:6780/
 ```
 
 如果需要让虚拟机外部或局域网访问 Gateway，可以改监听地址：
@@ -255,7 +248,7 @@ WEB_GATEWAY_HOST=0.0.0.0 npm run dev
 也可以指定 IMServer 地址：
 
 ```bash
-IM_HOST=127.0.0.1 IM_PORT=8080 npm run dev
+IM_HOST=127.0.0.1 IM_PORT=1556 npm run dev
 ```
 
 ### 5. 浏览器演示
@@ -469,8 +462,8 @@ Delivered 且超过 ACK 等待时间的消息
 查看端口：
 
 ```bash
-ss -ltnp | grep 3000
-ss -ltnp | grep 8080
+ss -ltnp | grep 6780
+ss -ltnp | grep 1556
 ss -ltnp | grep 6379
 ```
 
@@ -521,8 +514,8 @@ npm run build
 当前 Docker 编排包含三个运行镜像：
 
 - `docker.m.daocloud.io/library/redis:7-alpine`：Redis 消息存储。
-- `rmd-server:local`：C++ IMServer，监听 `8080`。
-- `rmd-web-gateway:local`：Web Gateway，监听 `3000`。
+- `rmd-server:local`：C++ IMServer，监听 `1556`。
+- `rmd-web-gateway:local`：Web Gateway，监听 `6780`。
 
 构建并启动：
 
@@ -533,5 +526,5 @@ docker compose up -d --build
 启动后浏览器访问：
 
 ```text
-http://127.0.0.1:3000/
+http://127.0.0.1:6780/
 ```

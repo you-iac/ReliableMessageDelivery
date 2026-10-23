@@ -1,19 +1,38 @@
 #include "ChatServer.h"
 
+#include <muduo/base/AsyncLogging.h>
 #include <muduo/base/Logging.h>
 #include <muduo/net/EventLoop.h>
 #include <muduo/net/InetAddress.h>
 #include <muduo/net/TcpServer.h>
 
+#include <iostream>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "Codec.h"
 #include "EnvelopeInspector.h"
 
-ChatServer::ChatServer(uint16_t port, int thread_num)
+namespace {
+const int kLogRollSize = 500 * 1000 * 1000;
+std::unique_ptr<muduo::AsyncLogging> g_async_logging;
+
+void asyncOutput(const char* msg, int len) {
+    if (g_async_logging) {
+        g_async_logging->append(msg, len);
+    }
+}
+}
+
+ChatServer::ChatServer(uint16_t port,
+                       int thread_num,
+                       LogOutput log_output)
     : port_(port),
-      thread_num_(thread_num) {
+      thread_num_(thread_num),
+      enable_status_output_(log_output == LogOutput::kFile) {
+    configureLogging(log_output);
 }
 
 bool ChatServer::start() {
@@ -33,6 +52,12 @@ bool ChatServer::start() {
                Timestamp time) {
             onMessage(conn, buffer, time);
         });
+    if (enable_status_output_) {
+        event_loop.runEvery(1.0, [this] {
+            printStatus();
+        });
+    }
+
     // 启动业务分发器线程池，准备处理后续到达的 Envelope。
     dispatcher_.start();
 
@@ -116,4 +141,33 @@ ClientSession* ChatServer::findSessionLocked(const TcpConnectionPtr& conn) {
         return nullptr;
     }
     return &it->second;
+}
+
+void ChatServer::printStatus() const {
+    ServerStatus status = dispatcher_.getStatus();
+
+    std::ostringstream oss;
+    oss << "server_status";
+    for (const auto& metric : status.metrics()) {
+        oss << " " << metric.key << "=[";
+        for (std::size_t i = 0; i < metric.numbers.size(); ++i) {
+            if (i != 0) {
+                oss << ",";
+            }
+            oss << metric.numbers[i];
+        }
+        oss << "]";
+    }
+
+    std::cout << oss.str() << std::endl;
+}
+
+void ChatServer::configureLogging(LogOutput log_output) {
+    if (log_output == LogOutput::kTerminal) {
+        return;
+    }
+
+    g_async_logging.reset(new muduo::AsyncLogging("server", kLogRollSize));
+    g_async_logging->start();
+    muduo::Logger::setOutput(asyncOutput);
 }

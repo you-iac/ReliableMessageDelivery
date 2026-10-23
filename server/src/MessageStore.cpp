@@ -3,10 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
-#include <memory>
 #include <string>
-
-#include <sys/time.h>
 
 #include <hiredis/hiredis.h>
 #include <muduo/base/Logging.h>
@@ -48,8 +45,6 @@ std::string MakeIdempotencyKey(uint64_t from_uid,
     return "rmd:idem:" + MakeClientMsgKey(from_uid, client_msg_id);
 }
 
-const char kDefaultRedisHost[] = "127.0.0.1";
-const int kDefaultRedisPort = 6379;
 const char kRedisMsgNextIdKey[] = "rmd:msg:next_id";
 const char kRedisMsgKeyPrefix[] = "rmd:msg:";
 const char kRedisPendingKeyPrefix[] = "rmd:pending:";
@@ -157,57 +152,6 @@ end
 redis.call('HINCRBY', KEYS[1], 'retry_count', 1)
 return 1
 )lua";
-
-// hiredis 的 redisReply 需要显式释放，这里用 unique_ptr 托管生命周期。
-struct RedisReplyDeleter {
-    void operator()(redisReply* reply) const {
-        if (reply != nullptr) {
-            freeReplyObject(reply);
-        }
-    }
-};
-
-using RedisReplyPtr = std::unique_ptr<redisReply, RedisReplyDeleter>;
-
-const char* RedisHost() {
-    const char* host = std::getenv("RMD_REDIS_HOST");
-    return (host != nullptr && host[0] != '\0') ? host : kDefaultRedisHost;
-}
-
-int RedisPort() {
-    const char* text = std::getenv("RMD_REDIS_PORT");
-    if (text == nullptr || text[0] == '\0') {
-        return kDefaultRedisPort;
-    }
-
-    char* end = nullptr;
-    long port = std::strtol(text, &end, 10);
-    if (end == nullptr || *end != '\0' || port <= 0 || port > 65535) {
-        return kDefaultRedisPort;
-    }
-
-    return static_cast<int>(port);
-}
-
-// 建立到 Redis 的同步连接。失败时返回 nullptr，由调用方降级为操作失败。
-redisContext* ConnectRedis() {
-    // 避免 Redis 不可用时业务线程无限期阻塞。
-    timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 500000;
-
-    redisContext* context = redisConnectWithTimeout(RedisHost(),
-                                                    RedisPort(),
-                                                    timeout);
-    if (context == nullptr) {
-        return nullptr;
-    }
-    if (context->err != 0) {
-        redisFree(context);
-        return nullptr;
-    }
-    return context;
-}
 
 // hiredis 可能把数字以 INTEGER 或 STRING 返回，统一转成字符串后再解析。
 bool ReplyToString(const redisReply* reply, std::string* out) {
@@ -331,18 +275,26 @@ bool BuildCreateResult(const redisReply* reply, CreateMessageResult* result) {
 }
 
 // 查询单条消息。字段顺序必须和 BuildRecordFromFields() 保持一致。
-bool FetchRecord(redisContext* context, uint64_t msg_id, MessageRecord* out) {
-    if (context == nullptr || out == nullptr || msg_id == 0) {
+bool FetchRecord(RedisClient* client, uint64_t msg_id, MessageRecord* out) {
+    if (client == nullptr || out == nullptr || msg_id == 0) {
         return false;
     }
 
     std::string msg_key = MakeMessageKey(msg_id);
-    RedisReplyPtr reply(static_cast<redisReply*>(redisCommand(
-        context,
-        "HMGET %b msg_id from_uid to_uid content client_msg_id status "
-        "created_at_ms delivered_at_ms acked_at_ms retry_count",
-        msg_key.data(),
-        msg_key.size())));
+    RedisReplyPtr reply = client->command({
+        "HMGET",
+        msg_key,
+        "msg_id",
+        "from_uid",
+        "to_uid",
+        "content",
+        "client_msg_id",
+        "status",
+        "created_at_ms",
+        "delivered_at_ms",
+        "acked_at_ms",
+        "retry_count"
+    });
 
     if (!reply || reply->type != REDIS_REPLY_ARRAY || reply->elements != 10) {
         return false;
@@ -359,7 +311,7 @@ bool ReplyIsTrue(const redisReply* reply) {
 }
 
 // 执行创建消息脚本，把跨 key 的幂等、写入和索引维护放在 Redis 内原子完成。
-RedisReplyPtr EvalCreateMessage(redisContext* context,
+RedisReplyPtr EvalCreateMessage(RedisClient* client,
                                 const std::string& idem_key,
                                 const std::string& pending_key,
                                 const std::string& from_recent_key,
@@ -369,79 +321,76 @@ RedisReplyPtr EvalCreateMessage(redisContext* context,
                                 const std::string& content,
                                 const std::string& client_msg_id,
                                 uint64_t created_at_ms) {
-    return RedisReplyPtr(static_cast<redisReply*>(redisCommand(
-        context,
-        "EVAL %b 5 %b %b %b %b %b %b %llu %llu %b %b %llu",
-        kCreateMessageScript,
-        sizeof(kCreateMessageScript) - 1,
-        idem_key.data(),
-        idem_key.size(),
-        kRedisMsgNextIdKey,
-        sizeof(kRedisMsgNextIdKey) - 1,
-        pending_key.data(),
-        pending_key.size(),
-        from_recent_key.data(),
-        from_recent_key.size(),
-        to_recent_key.data(),
-        to_recent_key.size(),
-        kRedisMsgKeyPrefix,
-        sizeof(kRedisMsgKeyPrefix) - 1,
-        static_cast<unsigned long long>(from_uid),
-        static_cast<unsigned long long>(to_uid),
-        content.data(),
-        content.size(),
-        client_msg_id.data(),
-        client_msg_id.size(),
-        static_cast<unsigned long long>(created_at_ms))));
+    if (client == nullptr) {
+        return RedisReplyPtr();
+    }
+
+    std::vector<std::string> keys;
+    keys.push_back(idem_key);
+    keys.push_back(kRedisMsgNextIdKey);
+    keys.push_back(pending_key);
+    keys.push_back(from_recent_key);
+    keys.push_back(to_recent_key);
+
+    std::vector<std::string> args;
+    args.push_back(kRedisMsgKeyPrefix);
+    args.push_back(std::to_string(from_uid));
+    args.push_back(std::to_string(to_uid));
+    args.push_back(content);
+    args.push_back(client_msg_id);
+    args.push_back(std::to_string(created_at_ms));
+
+    return client->eval(kCreateMessageScript,
+                        sizeof(kCreateMessageScript) - 1,
+                        keys,
+                        args);
 }
 
 // 执行消息状态转换脚本。几个状态脚本共享同一套 key/argv 布局。
-RedisReplyPtr EvalMsgStateScript(redisContext* context,
+RedisReplyPtr EvalMsgStateScript(RedisClient* client,
                                  const char* script,
                                  std::size_t script_len,
                                  uint64_t msg_id,
                                  uint64_t timestamp_ms) {
-    std::string msg_key = MakeMessageKey(msg_id);
-    return RedisReplyPtr(static_cast<redisReply*>(redisCommand(
-        context,
-        "EVAL %b 2 %b %b %llu %llu %b",
-        script,
-        script_len,
-        msg_key.data(),
-        msg_key.size(),
-        kRedisDeliveredTimeoutKey,
-        sizeof(kRedisDeliveredTimeoutKey) - 1,
-        static_cast<unsigned long long>(msg_id),
-        static_cast<unsigned long long>(timestamp_ms),
-        kRedisPendingKeyPrefix,
-        sizeof(kRedisPendingKeyPrefix) - 1)));
+    if (client == nullptr) {
+        return RedisReplyPtr();
+    }
+
+    std::vector<std::string> keys;
+    keys.push_back(MakeMessageKey(msg_id));
+    keys.push_back(kRedisDeliveredTimeoutKey);
+
+    std::vector<std::string> args;
+    args.push_back(std::to_string(msg_id));
+    args.push_back(std::to_string(timestamp_ms));
+    args.push_back(kRedisPendingKeyPrefix);
+
+    return client->eval(script, script_len, keys, args);
 }
 
 // 执行 ACK 状态脚本，额外传入 ack_uid 让 Redis 原子校验接收方身份。
-RedisReplyPtr EvalMarkAckedScript(redisContext* context,
+RedisReplyPtr EvalMarkAckedScript(RedisClient* client,
                                   uint64_t msg_id,
                                   uint64_t ack_uid,
                                   uint64_t timestamp_ms) {
-    std::string msg_key = MakeMessageKey(msg_id);
-    return RedisReplyPtr(static_cast<redisReply*>(redisCommand(
-        context,
-        "EVAL %b 2 %b %b %llu %llu %llu %b",
-        kMarkAckedScript,
-        sizeof(kMarkAckedScript) - 1,
-        msg_key.data(),
-        msg_key.size(),
-        kRedisDeliveredTimeoutKey,
-        sizeof(kRedisDeliveredTimeoutKey) - 1,
-        static_cast<unsigned long long>(msg_id),
-        static_cast<unsigned long long>(ack_uid),
-        static_cast<unsigned long long>(timestamp_ms),
-        kRedisPendingKeyPrefix,
-        sizeof(kRedisPendingKeyPrefix) - 1)));
-}
+    if (client == nullptr) {
+        return RedisReplyPtr();
+    }
 
-// nullptr reply 通常意味着连接已断开；context->err 非 0 表示连接进入错误态。
-bool IsConnectionBroken(const redisContext* context, const redisReply* reply) {
-    return context == nullptr || context->err != 0 || reply == nullptr;
+    std::vector<std::string> keys;
+    keys.push_back(MakeMessageKey(msg_id));
+    keys.push_back(kRedisDeliveredTimeoutKey);
+
+    std::vector<std::string> args;
+    args.push_back(std::to_string(msg_id));
+    args.push_back(std::to_string(ack_uid));
+    args.push_back(std::to_string(timestamp_ms));
+    args.push_back(kRedisPendingKeyPrefix);
+
+    return client->eval(kMarkAckedScript,
+                        sizeof(kMarkAckedScript) - 1,
+                        keys,
+                        args);
 }
 
 }  // namespace
@@ -449,29 +398,7 @@ bool IsConnectionBroken(const redisContext* context, const redisReply* reply) {
 MessageStore::MessageStore() {
 }
 
-// 析构时持锁关闭连接，避免其他线程仍在使用 redis_。
 MessageStore::~MessageStore() {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    closeConnectionLocked();
-}
-
-// 调用方已持有 redis_mutex_；连接不存在或错误时重新建立连接。
-bool MessageStore::ensureConnectedLocked() {
-    if (redis_ != nullptr && redis_->err == 0) {
-        return true;
-    }
-
-    closeConnectionLocked();
-    redis_ = ConnectRedis();
-    return redis_ != nullptr;
-}
-
-// 调用方已持有 redis_mutex_；关闭连接后把指针置空，便于后续重连。
-void MessageStore::closeConnectionLocked() {
-    if (redis_ != nullptr) {
-        redisFree(redis_);
-        redis_ = nullptr;
-    }
 }
 
 // 创建消息或返回幂等命中的已有消息。失败时 result.ok 保持 false。
@@ -481,17 +408,12 @@ CreateMessageResult MessageStore::createMessage(
     const std::string& content,
     const std::string& client_msg_id) {
     CreateMessageResult result;
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return result;
-    }
-
     // 幂等 key 和接收方 Pending 索引 key 由业务字段稳定生成。
     std::string idem_key = MakeIdempotencyKey(from_uid, client_msg_id);
     std::string pending_key = MakePendingKey(to_uid);
     std::string from_recent_key = MakeRecentKey(from_uid);
     std::string to_recent_key = MakeRecentKey(to_uid);
-    RedisReplyPtr reply = EvalCreateMessage(redis_,
+    RedisReplyPtr reply = EvalCreateMessage(&redis_client_,
                                             idem_key,
                                             pending_key,
                                             from_recent_key,
@@ -501,12 +423,8 @@ CreateMessageResult MessageStore::createMessage(
                                             content,
                                             client_msg_id,
                                             NowMs());
-    if (IsConnectionBroken(redis_, reply.get())) {
-        closeConnectionLocked();
-        return result;
-    }
     // Redis 返回错误或记录字段格式不符合预期时，统一视为创建失败。
-    if (reply->type == REDIS_REPLY_ERROR ||
+    if (!reply || reply->type == REDIS_REPLY_ERROR ||
         !BuildCreateResult(reply.get(), &result)) {
         return CreateMessageResult();
     }
@@ -516,138 +434,71 @@ CreateMessageResult MessageStore::createMessage(
 
 // 标记消息已投递给接收方，并加入 Delivered 超时扫描索引。
 bool MessageStore::markDelivered(uint64_t msg_id) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return false;
-    }
-
-    RedisReplyPtr reply = EvalMsgStateScript(redis_,
+    RedisReplyPtr reply = EvalMsgStateScript(&redis_client_,
                                              kMarkDeliveredScript,
                                              sizeof(kMarkDeliveredScript) - 1,
                                              msg_id,
                                              NowMs());
-    if (IsConnectionBroken(redis_, reply.get())) {
-        closeConnectionLocked();
-        return false;
-    }
     return ReplyIsTrue(reply.get());
 }
 
 // 目标离线或连接不可用时，将消息重新放回 Pending 索引。
 bool MessageStore::markPending(uint64_t msg_id) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return false;
-    }
-
-    RedisReplyPtr reply = EvalMsgStateScript(redis_,
+    RedisReplyPtr reply = EvalMsgStateScript(&redis_client_,
                                              kMarkPendingScript,
                                              sizeof(kMarkPendingScript) - 1,
                                              msg_id,
                                              NowMs());
-    if (IsConnectionBroken(redis_, reply.get())) {
-        closeConnectionLocked();
-        return false;
-    }
     return ReplyIsTrue(reply.get());
 }
 
 // 接收方确认消费后，消息进入 Acked 状态并从重投相关索引中移除。
 bool MessageStore::markAcked(uint64_t msg_id, uint64_t ack_uid) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return false;
-    }
-
-    RedisReplyPtr reply = EvalMarkAckedScript(redis_,
+    RedisReplyPtr reply = EvalMarkAckedScript(&redis_client_,
                                               msg_id,
                                               ack_uid,
                                               NowMs());
-    if (IsConnectionBroken(redis_, reply.get())) {
-        closeConnectionLocked();
-        return false;
-    }
     return ReplyIsTrue(reply.get());
 }
 
 // 投递失败是终态，同样需要清理 Pending 和 Delivered 超时索引。
 bool MessageStore::markFailed(uint64_t msg_id) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return false;
-    }
-
-    RedisReplyPtr reply = EvalMsgStateScript(redis_,
+    RedisReplyPtr reply = EvalMsgStateScript(&redis_client_,
                                              kMarkFailedScript,
                                              sizeof(kMarkFailedScript) - 1,
                                              msg_id,
                                              NowMs());
-    if (IsConnectionBroken(redis_, reply.get())) {
-        closeConnectionLocked();
-        return false;
-    }
     return ReplyIsTrue(reply.get());
 }
 
 // 按 msg_id 读取完整消息记录。引用参数只在返回 true 时可用。
 bool MessageStore::getMessage(uint64_t msg_id, MessageRecord& out) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return false;
-    }
-
-    bool ok = FetchRecord(redis_, msg_id, &out);
-    if (redis_ != nullptr && redis_->err != 0) {
-        closeConnectionLocked();
-    }
+    bool ok = FetchRecord(&redis_client_, msg_id, &out);
     return ok;
 }
 
 // 增加消息重试次数；消息不存在时脚本返回 0。
 bool MessageStore::incrementRetryCount(uint64_t msg_id) {
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return false;
-    }
-
     std::string msg_key = MakeMessageKey(msg_id);
-    RedisReplyPtr reply(static_cast<redisReply*>(redisCommand(
-        redis_,
-        "EVAL %b 1 %b",
-        kIncrementRetryScript,
-        sizeof(kIncrementRetryScript) - 1,
-        msg_key.data(),
-        msg_key.size())));
-    if (IsConnectionBroken(redis_, reply.get())) {
-        closeConnectionLocked();
-        return false;
-    }
+    RedisReplyPtr reply = redis_client_.eval(kIncrementRetryScript,
+                                             sizeof(kIncrementRetryScript) - 1,
+                                             {msg_key},
+                                             {});
     return ReplyIsTrue(reply.get());
 }
 
 // 查询某个接收方所有 Pending 消息。当前实现先取索引，再逐条校验记录。
 std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
     std::vector<MessageRecord> result;
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        LOG_INFO << "getPendingMessages failed: redis unavailable, to_uid="
-                 << to_uid;
-        return result;
-    }
-
     std::string pending_key = MakePendingKey(to_uid);
-    RedisReplyPtr reply(static_cast<redisReply*>(redisCommand(
-        redis_,
-        "ZRANGE %b 0 -1",
-        pending_key.data(),
-        pending_key.size())));
+    RedisReplyPtr reply = redis_client_.command({"ZRANGE",
+                                                pending_key,
+                                                "0",
+                                                "-1"});
 
-    if (IsConnectionBroken(redis_, reply.get())) {
+    if (!reply) {
         LOG_INFO << "getPendingMessages failed: ZRANGE pending key failed, key="
-                 << pending_key
-                 << ", redis_err="
-                 << (redis_ != nullptr ? redis_->errstr : "null redis context");
-        closeConnectionLocked();
+                 << pending_key;
         return result;
     }
     if (reply->type != REDIS_REPLY_ARRAY) {
@@ -675,19 +526,12 @@ std::vector<MessageRecord> MessageStore::getPendingMessages(uint64_t to_uid) {
         }
 
         MessageRecord record;
-        if (!FetchRecord(redis_, msg_id, &record)) {
+        if (!FetchRecord(&redis_client_, msg_id, &record)) {
             ++fetch_failed;
             if (!has_bad_sample) {
                 first_bad_index = i;
                 first_bad_msg_id = msg_id;
                 has_bad_sample = true;
-            }
-            if (redis_ != nullptr && redis_->err != 0) {
-                LOG_INFO << "getPendingMessages failed: fetch record failed, key="
-                         << pending_key << ", msg_id=" << msg_id
-                         << ", redis_err=" << redis_->errstr;
-                closeConnectionLocked();
-                break;
             }
             continue;
         }
@@ -727,27 +571,17 @@ std::vector<MessageRecord> MessageStore::getRecentMessages(uint64_t uid,
         return result;
     }
 
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        LOG_INFO << "getRecentMessages failed: redis unavailable, uid="
-                 << uid;
-        return result;
-    }
-
     std::string recent_key = MakeRecentKey(uid);
-    RedisReplyPtr reply(static_cast<redisReply*>(redisCommand(
-        redis_,
-        "ZREVRANGE %b 0 %llu",
-        recent_key.data(),
-        recent_key.size(),
-        static_cast<unsigned long long>(limit - 1))));
+    RedisReplyPtr reply = redis_client_.command({
+        "ZREVRANGE",
+        recent_key,
+        "0",
+        std::to_string(limit - 1)
+    });
 
-    if (IsConnectionBroken(redis_, reply.get())) {
+    if (!reply) {
         LOG_INFO << "getRecentMessages failed: ZREVRANGE recent key failed, key="
-                 << recent_key
-                 << ", redis_err="
-                 << (redis_ != nullptr ? redis_->errstr : "null redis context");
-        closeConnectionLocked();
+                 << recent_key;
         return result;
     }
     if (reply->type != REDIS_REPLY_ARRAY) {
@@ -760,11 +594,7 @@ std::vector<MessageRecord> MessageStore::getRecentMessages(uint64_t uid,
         uint64_t msg_id = 0;
         MessageRecord record;
         if (!ParseUint64(reply->element[i], &msg_id) ||
-            !FetchRecord(redis_, msg_id, &record)) {
-            if (redis_ != nullptr && redis_->err != 0) {
-                closeConnectionLocked();
-                break;
-            }
+            !FetchRecord(&redis_client_, msg_id, &record)) {
             continue;
         }
 
@@ -782,25 +612,16 @@ std::vector<MessageRecord> MessageStore::getTimeoutDeliveredMessages(
     uint64_t now_ms,
     uint64_t timeout_ms) {
     std::vector<MessageRecord> result;
-    std::lock_guard<std::mutex> lock(redis_mutex_);
-    if (!ensureConnectedLocked()) {
-        return result;
-    }
-
     uint64_t max_score = now_ms >= timeout_ms ? now_ms - timeout_ms : 0;
     // delivered_at_ms 作为 zset score，所以 0..max_score 即超时候选集合。
-    RedisReplyPtr reply(static_cast<redisReply*>(redisCommand(
-        redis_,
-        "ZRANGEBYSCORE %b 0 %llu",
+    RedisReplyPtr reply = redis_client_.command({
+        "ZRANGEBYSCORE",
         kRedisDeliveredTimeoutKey,
-        sizeof(kRedisDeliveredTimeoutKey) - 1,
-        static_cast<unsigned long long>(max_score))));
+        "0",
+        std::to_string(max_score)
+    });
 
-    if (IsConnectionBroken(redis_, reply.get())) {
-        closeConnectionLocked();
-        return result;
-    }
-    if (reply->type != REDIS_REPLY_ARRAY) {
+    if (!reply || reply->type != REDIS_REPLY_ARRAY) {
         return result;
     }
 
@@ -809,11 +630,7 @@ std::vector<MessageRecord> MessageStore::getTimeoutDeliveredMessages(
         MessageRecord record;
         // 候选集合只是索引结果，最终仍以消息 hash 中的状态和时间为准。
         if (!ParseUint64(reply->element[i], &msg_id) ||
-            !FetchRecord(redis_, msg_id, &record)) {
-            if (redis_ != nullptr && redis_->err != 0) {
-                closeConnectionLocked();
-                break;
-            }
+            !FetchRecord(&redis_client_, msg_id, &record)) {
             continue;
         }
 

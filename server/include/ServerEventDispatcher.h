@@ -11,6 +11,7 @@
 #include "MessageStore.h"
 #include "UserStateService.h"
 #include "ShardedThreadPool.h"
+#include "ServerStatus.h"
 
 #include <muduo/net/TcpConnection.h>
 
@@ -49,6 +50,9 @@ public:
     // 连接断开虽然不是 protobuf Envelope，但它会影响用户在线状态，
     // 所以也应该进入同一个业务事件队列，和 LOGIN_REQ 等事件保持顺序处理。
     bool enqueueConnectionClosed(const muduo::net::TcpConnectionPtr& conn);
+
+    // 获取当前业务分发器的状态统计。
+    ServerStatus getStatus() const;
 private:
     // 队列中的一条业务事件。
     //
